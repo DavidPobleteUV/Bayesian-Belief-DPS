@@ -1,10 +1,10 @@
 # Bayesian Belief DPS
 
-This repository contains the research code for the Bayesian Dynamic Policy Search (BayesDPS) experiments described in the accompanying paper. The project explores reservoir expansion planning under climate uncertainty using dynamic decision rules trained with multi-objective evolutionary optimization. Both Bayesian and non-Bayesian (normDPS) formulations are supported.
+This repository contains the research code for the Bayesian-Belief Direct Policy Search (Bayes-Belief DPS) experiments described in the paper. The project explores long-term water infrastructure capacity expansion planning under climate uncertainty using adaptive policy trained with multi-objective evolutionary optimization. Both Bayesian and non-Bayesian (StandardPS) formulations are supported.
 
 ## Repository structure
 
-- `main_par.py`: Entry point that launches multi-seed optimizations for both BayesDPS and normDPS configurations and writes pickled result bundles to `results/`.
+- `main_par.py`: Entry point that launches multi-seed optimizations for both Bayesian-Belief DPS and StandardDPS configurations and writes pickled result bundles to `results/`.
 - `src/Config.py`: Default experiment configuration (data paths, cost parameters, storage settings, and indicator normalization).
 - `src/pipe_problem.py`: Platypus `Problem` definition that links candidate policy parameters to the simulation model.
 - `src/pipe_simulation.py` / `src/pipesim_individual.py`: Core simulation logic for reservoir operation and infrastructure decisions.
@@ -34,7 +34,7 @@ pip install numpy pandas matplotlib seaborn numba scikit-learn statsmodels platy
    python main_par.py
    ```
 
-   The default settings evaluate both BayesDPS and normDPS policies across multiple random seeds using the EpsMOEA algorithm. Results are written to `results/results_bayes_<label>.dat` and `results/results_norm_<label>.dat`.
+   The default settings evaluate both BayesDPS and StandardDPS policies across multiple random seeds using the EpsMOEA algorithm. Results are written to `results/results_bayes_<label>.dat` and `results/results_norm_<label>.dat`.
 
 3. Use `src/plot_optimization.py` to visualize Pareto fronts or compare BayesDPS versus normDPS performance. The plotting script expects the pickled result files produced by the previous step.
 
@@ -45,9 +45,7 @@ pip install numpy pandas matplotlib seaborn numba scikit-learn statsmodels platy
 - **Cost and demand settings:** Update reservoir capacities, cost coefficients, and demand targets in `src/Config.py` (and the test-specific `Config_test*.py` files) to explore alternative scenarios.
 - **Experiment scope:** Set `option_type` in `main_par.py` to `"both"`, `"static"`, or `"flexible"` to constrain expansion strategies.
 
-## Reproducing figures
 
-The notebook and plotting helpers in `src/` illustrate indicator processing, Gaussian process regression, and hypervolume metrics. For paper figures, load the saved `.dat` result files and reuse the plotting utilities to regenerate the Pareto comparisons described above.
 
 ## License
 
