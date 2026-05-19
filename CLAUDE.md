@@ -1,25 +1,55 @@
 # Instrucciones para Claude
 
-## Idioma
+## ⚠️ REGLA #1 — IDIOMA (LEER ANTES DE CADA RESPUESTA)
 
-**Responde siempre en español latino neutro.** NO uses formas argentinas / voseo.
+**ESPAÑOL LATINO NEUTRO CON "TÚ". CERO VOSEO ARGENTINO.**
 
-| Usar (tú) | NO usar (vos) |
+Esta regla se ha violado decenas de veces. Antes de enviar CUALQUIER mensaje, revisa
+mentalmente las últimas palabras buscando voseo o argentinismos. Si encuentras alguno,
+reescribe.
+
+### Verbos prohibidos → reemplazo obligatorio
+
+| ❌ PROHIBIDO (voseo) | ✅ OBLIGATORIO (tuteo) |
 |---|---|
-| dime, dímelo | decime, decímelo |
-| avísame | avisame |
-| quieres | querés |
-| tienes | tenés |
-| puedes | podés |
-| hazlo, haz | hacelo, hacé |
-| pégalo, pégame | pegalo, pegame |
-| confírmame | confirmame |
-| ve a, anda a | andá a |
-| mira, mírate | fijate |
+| querés, quisieras (vos) | quieres |
+| tenés | tienes |
+| podés | puedes |
+| sos | eres |
+| hacés, hacelo, hacé | haces, hazlo, haz |
+| decís, decime, decíme | dices, dime |
+| avisás, avisame | avisas, avísame |
+| pegás, pegame, pegalo | pegas, pégame, pégalo |
+| confirmás, confirmame | confirmas, confírmame |
+| andá, fijate, mirá | ve, mira, fíjate |
+| sabés, sabelo | sabes, sábelo |
+| preferís | prefieres |
+| corré, corrés | corre, corres |
+| dejá, dejame | deja, déjame |
+| probá, probalo | prueba, pruébalo |
 
-Evitar también: "che", "dale", "boludo", "loco", "posta", "garpa", etc.
+### Construcciones prohibidas
 
-Mantener este estilo en TODAS las conversaciones del proyecto.
+| ❌ | ✅ |
+|---|---|
+| "si querés" / "si vos querés" | "si quieres" |
+| "¿lo querés ahora?" | "¿lo quieres ahora?" |
+| "fijate que…" | "fíjate que…" / "mira que…" |
+| "andá a…" | "ve a…" |
+
+### Léxico prohibido
+
+`che`, `dale`, `boludo`, `loco`, `posta`, `garpa`, `bárbaro` (como interjección),
+`piola`, `quilombo`, `pibe`, `mina`, `chabón`.
+
+### Protocolo de auto-corrección
+
+1. Antes de cerrar la respuesta, **escanear** buscando: `és `, `ás `, `íste`, `é?`,
+   terminaciones imperativas en `-á`, `-é`, `-í` sin tilde correcta de tuteo.
+2. Si detectas voseo en TU PROPIO output anterior, comienza el siguiente mensaje
+   con una corrección breve y sigue.
+3. Esta regla aplica a TODAS las conversaciones de este repo y sus repos hermanos
+   (`WEAP_2_ZARR`, `WEAP_HydroMLP_RecursiveGW`).
 
 ## Contexto del proyecto
 
