@@ -52,8 +52,9 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 
-# Las 2 acciones que el MLP actual NO conoce — se fijan en 0 en el CSV
-ACTIONS_UNKNOWN_TO_MLP = ["act_prorrateo_cuenca", "act_nuevo_pozo_a_5km"]
+# El MLP ahora conoce las 5 acciones (incl. prorrateo_cuenca y nuevo_pozo_a_5km),
+# así que no hay acciones "desconocidas" que fijar en 0.
+ACTIONS_UNKNOWN_TO_MLP = []
 
 OBJECTIVE_NAMES = [
     "J1_neg_storage",     # negado: min(-J1) = max(J1)
@@ -202,10 +203,11 @@ def schedule_to_weap_csv(
         # Binarias
         for i, name in enumerate(ACTION_NAMES_BINARY):
             row_values[name] = int(action_history[y, i])
-        # Cantidades
+        # Cantidades (las columnas q empiezan después de las binarias)
         if include_q_values:
+            n_bin = len(ACTION_NAMES_BINARY)
             for i, name in enumerate(ACTION_NAMES_QUANTITY):
-                row_values[name] = float(action_history[y, 3 + i])
+                row_values[name] = float(action_history[y, n_bin + i])
         # Acciones desconocidas → siempre 0
         for name in ACTIONS_UNKNOWN_TO_MLP:
             row_values[name] = 0
