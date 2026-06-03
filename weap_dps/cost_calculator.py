@@ -80,12 +80,14 @@ def _get_cost_lookup() -> dict:
 # ─── Helper: extraer fuente y zona del link name ────────────────────
 import re
 
-_RE_LINK_SOURCE = re.compile(r"Transmission Link from (.+?) to ")
+# Tolera tokens estructurales con espacio O underscore (naming viejo vs nuevo
+# tras el rename espacios→underscores). El source capturado conserva sus _.
+_RE_LINK_SOURCE = re.compile(r"Transmission[ _]Link[ _]from[ _](.+?)[ _]to[ _]")
 
 
 def _parse_link_source(col_name: str) -> str | None:
-    """De 'AP_TransmissionLinks__Transmission Link from APR_Q01_Fict_X to Y'
-       devuelve 'APR_Q01_Fict_X'."""
+    """De 'AP_TransmissionLinks__Transmission_Link_from_APR_Q01_Fict_X_to_Y'
+       (o con espacios) devuelve 'APR_Q01_Fict_X'."""
     m = _RE_LINK_SOURCE.search(col_name)
     return m.group(1).strip() if m else None
 
@@ -342,7 +344,7 @@ def j4_supply_cost(
     n_links["unknown"] = 0
 
     for j, name in enumerate(target_names_surf):
-        if "Transmission Link from" not in name:
+        if "Transmission Link from" not in name and "Transmission_Link_from" not in name:
             continue
         source = _parse_link_source(name)
         if source is None:
@@ -365,8 +367,8 @@ def j4_supply_cost(
             n_links["PozosRegulares"] += 1
 
         # ── Tipo 2: Withdrawal Node N (CSV: Aduccion/Camiones/Desal/PozoCostero) ─
-        elif source.startswith("Withdrawal Node"):
-            node = source.replace("Withdrawal Node", "").strip()
+        elif source.startswith("Withdrawal Node") or source.startswith("Withdrawal_Node"):
+            node = source.replace("Withdrawal_Node", "").replace("Withdrawal Node", "").strip("_ ").strip()
             if node in lookup:
                 src_type, unit_cost, _town = lookup[node]
                 yearly_vol = _weekly_to_yearly(flow_per_week, n_years)  # m³/año
@@ -532,7 +534,29 @@ def j5_weeks_in_failure(surf_denorm: np.ndarray,
     return float(np.nansum(unmet_per_t > threshold))
 
 
-# ─── Wrapper: calcula los 5 ──────────────────────────────────────────────
+# ─── J6: salinidad promedio de los pozos costeros AP (acuífero Q09) ──────
+# WF_SalinityFactor está en los targets GW del MLP. Los pozos costeros son los
+# del acuífero Q09 expuestos a intrusión salina: Pichidangui (APU_Q09, 4),
+# ElEsfuerzo (APR_Q09, 3) y Pozo_Costero_DOH (1) = 8 pozos. Se minimiza.
+_RE_COASTAL_SAL = re.compile(
+    r"WF_SalinityFactor__(APU_Q09|APR_Q09|Pozo_Costero)"
+)
+
+
+def j6_coastal_salinity(gw_denorm: np.ndarray,
+                        target_names_gw: list[str],
+                        decision_start_week: int = WARMUP_WEEKS) -> float:
+    """Salinidad promedio (SalinityFactor) de los pozos costeros AP del
+    acuífero Q09, promediada sobre el horizonte de decisión y los pozos.
+    Promedio simple. Se MINIMIZA (menos salinidad = mejor)."""
+    cols = [i for i, n in enumerate(target_names_gw) if _RE_COASTAL_SAL.search(n)]
+    if not cols:
+        return float("nan")
+    sal = gw_denorm[decision_start_week:, cols]   # (semanas, n_pozos)
+    return float(np.nanmean(sal))
+
+
+# ─── Wrapper: calcula los 6 ──────────────────────────────────────────────
 def compute_objectives(gw_denorm: np.ndarray,
                        surf_denorm: np.ndarray,
                        target_names_gw: list[str],
@@ -552,4 +576,5 @@ def compute_objectives(gw_denorm: np.ndarray,
                                             actions_history=actions_history,
                                             action_names_order=action_names_order),
         "J5_weeks_failure": j5_weeks_in_failure(surf_denorm, target_names_surf, decision_start_week=decision_start_week),
+        "J6_coastal_salinity": j6_coastal_salinity(gw_denorm, target_names_gw, decision_start_week=decision_start_week),
     }

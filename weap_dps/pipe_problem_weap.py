@@ -30,10 +30,10 @@ class PipeProblemWEAP(Problem):
         n_vars = PipeWEAP.policy_param_size(
             M=pipe.policy_M, K=pipe.policy_K, N=4,
         )
-        super().__init__(n_vars, 5)
+        super().__init__(n_vars, 6)   # 6 objetivos (J1..J6); J6 = salinidad costera
         self.types[:] = [Real(var_lo, var_hi) for _ in range(n_vars)]
         # Direcciones: todos minimize (J1 y J3 ya vienen negados en simulation())
-        self.directions[:] = [Problem.MINIMIZE] * 5
+        self.directions[:] = [Problem.MINIMIZE] * 6
 
     def evaluate(self, solution):
         P = np.array(solution.variables, dtype=float)

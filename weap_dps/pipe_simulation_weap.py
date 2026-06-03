@@ -145,5 +145,6 @@ class PipeWEAP:
             -J_mean[2],   # J3 agri value (max → neg)
              J_mean[3],   # J4 cost
              J_mean[4],   # J5 weeks failure
+             J_mean[5],   # J6 salinidad costera (min)
         ]
         return tuple(J)

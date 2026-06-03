@@ -69,6 +69,36 @@ def load_dat(path: Path) -> list[tuple]:
     return data["result"], data
 
 
+def epsilon_grid_thin(objectives: np.ndarray, eps_frac: float) -> np.ndarray:
+    """ε-dominancia (grid thinning): divide el espacio de objetivos en una
+    grilla de celdas de tamaño eps_i = eps_frac * rango_i y conserva UNA
+    solución por celda ocupada (la más cercana a la esquina ideal de su celda).
+
+    Reduce el frente manteniendo cobertura uniforme del trade-off. Todos los
+    objetivos están en minimización (J1/J3 ya vienen negados).
+
+    Devuelve los índices (sobre `objectives`) de las soluciones conservadas.
+    """
+    n, m = objectives.shape
+    mins = objectives.min(axis=0)
+    rng = objectives.max(axis=0) - mins
+    rng[rng <= 0] = 1.0                      # objetivos constantes → evita /0
+    eps = eps_frac * rng                     # tamaño de celda por objetivo
+    cells = np.floor((objectives - mins) / eps).astype(np.int64)  # (n, m)
+
+    # distancia normalizada a la esquina inferior (ideal) de cada celda
+    corner = mins + cells * eps
+    dist = np.sum((objectives - corner) / eps, axis=1)
+
+    best_per_cell: dict[tuple, tuple[float, int]] = {}
+    for i in range(n):
+        key = tuple(cells[i].tolist())
+        if key not in best_per_cell or dist[i] < best_per_cell[key][0]:
+            best_per_cell[key] = (dist[i], i)
+    keep = sorted(idx for _, idx in best_per_cell.values())
+    return np.array(keep, dtype=int)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--inputs", type=Path, nargs="+", default=None,
@@ -76,6 +106,10 @@ def main():
     p.add_argument("--glob",   type=str, default=None,
                    help="Patrón glob (en lugar de --inputs)")
     p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--epsilon_frac", type=float, default=None,
+                   help="Si se da, aplica ε-dominancia (grid thinning) con "
+                        "celdas = frac × rango de cada objetivo (ej. 0.02 = 2%%). "
+                        "Guarda un frente reducido en <output>_eps.dat")
     args = p.parse_args()
 
     # Resolver lista de inputs
@@ -129,7 +163,24 @@ def main():
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with open(args.output, "wb") as f:
         pickle.dump(out, f)
-    logger.info("Frente combinado guardado: %s", args.output)
+    logger.info("Frente combinado guardado: %s  (%d soluciones)", args.output, len(result))
+
+    # ── ε-dominancia opcional: frente reducido ───────────────────────────────
+    if args.epsilon_frac is not None:
+        kept_objs = objs_arr[keep_idx]
+        eps_idx_local = epsilon_grid_thin(kept_objs, args.epsilon_frac)
+        eps_result = [result[i] for i in eps_idx_local]
+        eps_out_path = args.output.with_name(args.output.stem + "_eps.dat")
+        with open(eps_out_path, "wb") as f:
+            pickle.dump({
+                "result":  eps_result,
+                "config":  {"combined_from": [str(p) for p in paths],
+                            "epsilon_frac": args.epsilon_frac},
+                "elapsed": None,
+            }, f)
+        logger.info("ε-dominancia (frac=%.3f): %d → %d soluciones representativas",
+                    args.epsilon_frac, len(result), len(eps_result))
+        logger.info("Frente reducido guardado: %s", eps_out_path)
 
 
 if __name__ == "__main__":
