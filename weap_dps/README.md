@@ -25,24 +25,41 @@ multiobjetivo de la cuenca de Quilimari (Chile).
 ## 1. Qué hace el bridge
 
 Reemplaza el modelo de reservorio simple del Standard DPS por **WEAP-HydroMLP**,
-un MLP recursivo de dos cabezas que predice 666 variables hidrológicas
-(524 GW + 142 superficiales) a paso semanal, entrenado sobre 510 corridas
-WEAP/MODFLOW del caso Quilimari.
+un MLP recursivo de dos cabezas que predice 733 variables hidrológicas
+(572 GW + 161 superficiales) a paso semanal, entrenado sobre ~768 corridas
+WEAP/MODFLOW válidas del caso Quilimari (factorial 0–593 + LHS 1000–1179).
 
 La optimización (NSGA-II o EpsMOEA, vía **Platypus**) busca políticas de
-adaptación que minimizan/maximizan 5 objetivos:
+adaptación que minimizan/maximizan **6 objetivos**:
 
 | Objetivo | Dirección | Descripción |
 |---|---|---|
 | **J1** GW storage | maximizar | mínimo de la suma de almacenamiento de los 9 SHACs |
 | **J2** Unmet AP | minimizar | demanda no atendida total de Agua Potable (m³) |
-| **J3** Valor agrícola | maximizar | producción de palto × precio (CLP) |
-| **J4** Costo de abastecimiento | minimizar | tarifa × volumen por fuente (CLP) |
+| **J3** Valor agrícola | maximizar | producción de palto × precio (NPV, CLP) |
+| **J4** Costo de abastecimiento | minimizar | **OPEX + CAPEX** (NPV, CLP): energía de bombeo + tarifas por fuente (camión/desal/aducción) + CAPEX anualizado de las acciones |
 | **J5** Semanas en falla | minimizar | conteo de semanas con Unmet/Demand > 10% |
+| **J6** Salinidad costera | minimizar | salinidad promedio de los 8 pozos AP costeros |
+
+> **J4** antes solo incluía CAPEX (bug); ahora suma **OPEX** (energía de bombeo +
+> tarifas por fuente). El costo se calcula en `cost_calculator.py` con el mapeo de
+> `data_weap/reference/town_source_cost_mapping.csv`.
 
 La política se modela como una red neuronal pequeña (Opción B, **adaptive**):
-cada año la NN decide las 3 acciones binarias + 3 cantidades continuas en
-base al estado hidrológico del año anterior.
+cada año la NN decide las **5 acciones binarias** (desal costera/completa,
+prorrateo SHAC/cuenca, nuevo pozo) en base al estado hidrológico del año anterior;
+las cantidades `q` se inyectan canónicas.
+
+### Flujo de salida → WEAP (active learning)
+
+1. `main_par_weap.py` → frente de Pareto en `runs_weap/pareto_*.dat`.
+2. `combine_pareto_fronts.py` → une frentes de varias semillas; opción
+   `--epsilon_frac` para **ε-dominancia** (frente reducido representativo).
+3. `pareto_to_runids.py` → exporta 7 políticas representativas × climas a
+   schedules CSV + master `RunIDs_Q_pareto_iter<N>.csv` (bloque de IDs 2000+),
+   listos para correr en WEAP (`WEAP_2_ZARR/src/pipeline/run_pipeline.py`).
+4. `extract_data.py` → copia el mejor checkpoint del MLP + scalers + template a
+   `data_weap/` (con `--checkpoint` para fijar el modelo elegido por rollout).
 
 ---
 
@@ -87,7 +104,7 @@ base al estado hidrológico del año anterior.
 │   │            │                                                      │
 │   │            ▼                                                      │
 │   │   ┌─────────────────┐                                             │
-│   │   │ cost_calculator │  J1..J5                                     │
+│   │   │ cost_calculator │  J1..J6                                     │
 │   │   └─────────────────┘                                             │
 │   │                                                                   │
 │   data_weap/                     ←  artefactos extraídos              │
@@ -119,7 +136,7 @@ weap_dps/
 ├── climate_sampler.py            ← Series weekly precip+temp por subcuenca
 ├── demand_builder.py             ← Crecimiento poblacional + áreas
 ├── action_translator.py          ← Policy NN output → input MLP
-├── cost_calculator.py            ← J1..J5
+├── cost_calculator.py            ← J1..J6
 ├── pipe_simulation_weap.py       ← Loop anual adaptive
 ├── pipe_problem_weap.py          ← Wrapper Platypus
 └── main_par_weap.py              ← Entry point optimization
