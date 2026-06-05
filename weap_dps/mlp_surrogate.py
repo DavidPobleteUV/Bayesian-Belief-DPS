@@ -457,7 +457,9 @@ class MLPSurrogate:
             if m == "log":
                 # clipear para evitar overflow en exp
                 col_clip = np.clip(col, -30, 30)
-                out[..., j] = np.exp(col_clip) - alpha
+                # No-negatividad: log se aplicó solo a variables positivas
+                # (transmisión, suministro) → el valor físico no puede ser < 0.
+                out[..., j] = np.maximum(np.exp(col_clip) - alpha, 0.0)
             elif m == "arcsinh":
                 out[..., j] = np.sinh(col) * alpha
             else:
