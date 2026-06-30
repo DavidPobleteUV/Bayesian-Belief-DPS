@@ -31,3 +31,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Checkpoints de modelo (pesados, no versionar)
+data_weap/*.ckpt
+*.ckpt

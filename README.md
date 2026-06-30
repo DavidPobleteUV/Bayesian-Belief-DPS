@@ -2,6 +2,28 @@
 
 This repository contains the research code for the Bayesian-Belief Direct Policy Search (Bayes-Belief DPS) experiments described in the paper. The project explores long-term water infrastructure capacity expansion planning under climate uncertainty using adaptive policy trained with multi-objective evolutionary optimization. Both Bayesian and non-Bayesian (StandardPS) formulations are supported.
 
+## Flujo entre los tres proyectos (cuenca Quilimari)
+
+```text
+  ┌────────────────────┐  zarr  ┌───────────────────────────┐  ckpt  ┌─────────────────────────┐
+  │    WEAP_2_ZARR     │  RAW   │ WEAP_HydroMLP_RecursiveGW │ v2/v3  │   Bayesian-Belief-DPS   │
+  │  simulación física │ ─────▶ │      surrogate (MLP)      │ ─────▶ │  optimización de política│
+  │                    │        │                           │        │                         │
+  │ WEAP–MODFLOW corre │        │ normaliza + entrena       │        │ DPS NSGA-II: policy NN  │
+  │ los run_ids   →    │        │ v2/v3 (cascade) →         │        │ → 5 objetivos (J1..J5)  │
+  │ weap_weekly.zarr   │        │ X_filtered / Y_filtered   │        │ Robust: clima × demanda │
+  └─────────▲──────────┘        └───────────────────────────┘        └────────────┬────────────┘
+            │                                                                      │
+            │  run_XXXX.csv (acciones por valor de uso) +                          │ frente de
+            │  RunIDs_Q_dps_proposals.csv                                          │ Pareto
+            └──────────────────────────────────────────────────────────────────────┘
+                 robust_pareto_to_rerun.py → loop-back: las propuestas se simulan en
+                 WEAP y re-alimentan el surrogate (active learning)
+```
+
+Este repo es la **etapa de optimización** (derecha del diagrama, `weap_dps/`): consume el
+checkpoint del surrogate y produce el frente de Pareto cuyas propuestas vuelven a WEAP.
+
 ## Repository structure
 
 - `main_par.py`: Entry point that launches multi-seed optimizations for both Bayesian-Belief DPS and StandardDPS configurations and writes pickled result bundles to `results/`.
@@ -46,6 +68,42 @@ pip install numpy pandas matplotlib seaborn numba scikit-learn statsmodels platy
 - **Experiment scope:** Set `option_type` in `main_par.py` to `"both"`, `"static"`, or `"flexible"` to constrain expansion strategies.
 
 
+
+## Quilimari WEAP-HydroMLP DPS (`weap_dps/`)
+
+Aplicación del DPS al caso Quilimari usando el surrogate WEAP-HydroMLP como modelo de
+sistema (en vez del modelo analítico del paper). El optimizador NSGA-II entrena una policy
+NN que decide 5 acciones (desal costera/completa, prorrateo SHAC/cuenca, nuevo pozo) sobre
+5 objetivos (J1 storage, J2 unmet, J3 agri, J4 cost, J5 failure weeks).
+
+- `weap_dps/mlp_surrogate.py` — wrapper del checkpoint WEAP-HydroMLP (rollout año a año).
+- `weap_dps/pipe_simulation_weap.py` / `pipe_problem_weap.py` — bridge simulación↔objetivos.
+- `weap_dps/cost_calculator.py` — J1..J5 desde las salidas denormalizadas del MLP.
+- `weap_dps/main_par_weap.py` — DPS de **escenario único** (clima/demanda del run-0).
+- Flags de entorno: `DPS_CKPT` (variante v2/v3), `DPS_WATERFALL` (.3, cascada well-anclada
+  para J4), `DPS_J4_CAL` (calibración de costo por variante).
+
+### Robust DPS (ensamble climate × demand)
+- `weap_dps/scenario_builder.py` — arma el ensamble (N climas × corners de demanda)
+  normalizando solo las columnas que cambian del template.
+- `weap_dps/main_robust_weap.py` — `RobustPipeWEAP` (subclase) con métrica robusta
+  **mean + λ·std** sobre los escenarios. Aislado del baseline.
+- `run_robust.sh` — runner paralelo (1 proceso/core, `OMP=1`) sobre variantes × seeds.
+
+### Exportar propuestas DPS a WEAP (formato re-corrida)
+- `robust_pareto_to_rerun.py` — selecciona propuestas del frente robust (extremos +
+  balanceadas + políticas con apagado), re-simula cada policy y escribe **`run_XXXX.csv`**
+  (valor de uso por año) + master **`../WEAP_2_ZARR/data/RunIDs_Q_dps_proposals.csv`**
+  (IDs 2000+), para correrlas en WEAP con `run_rerun_one.py` / `run_rerun_batch.py`.
+  `prorrateo_cuenca → prorrateo_shac`; respeta prendido/apagado; agrega variantes con
+  sequía prolongada. Ejemplo:
+  ```powershell
+  $env:DPS_CKPT = "..\WEAP_HydroMLP_RecursiveGW\runs\iter07_v3_clean\best_model-epoch=011-val_loss=0.0638.ckpt"
+  & "venv_DPS\Scripts\python.exe" robust_pareto_to_rerun.py --pareto runs_weap\robust\pareto_v3_seed42.dat
+  ```
+
+> El ciclo completo WEAP↔MLP↔DPS y el formato de acciones por valor de uso está en
+> `../WEAP_2_ZARR/README.md` (§12) y `../WEAP_RERUN_PLAN.md`.
 
 ## License
 

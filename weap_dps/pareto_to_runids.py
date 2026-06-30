@@ -175,11 +175,12 @@ def schedule_to_weap_csv(
     start_year: int,
     output_path: Path,
     include_q_values: bool = False,
+    hydro_end_year: int = 2050,
 ) -> None:
     """
-    Genera CSV en formato WEAP `$Columns = ...` con 2 filas por año
-    (1/1/YYYY y 12/31/YYYY mismo valor) para comportamiento step bajo
-    interpolación Average.
+    Genera CSV en formato WEAP `$Columns = ...` con 2 filas por AÑO HIDROLÓGICO
+    (4/2/YYYY y 4/1/(YYYY+1) mismo valor) para comportamiento step bajo
+    interpolación Average. El año-agua inicia el 2-abril (water_year_month=4).
 
     Solo escribe columnas binarias act_* + las 2 acciones desconocidas al
     MLP (siempre 0). Las cantidades q_* se omiten porque el modelo WEAP
@@ -212,10 +213,19 @@ def schedule_to_weap_csv(
         for name in ACTIONS_UNKNOWN_TO_MLP:
             row_values[name] = 0
 
-        # Dos filas: 1/1/YYYY y 12/31/YYYY
-        for date_str in [f"1/1/{year}", f"12/31/{year}"]:
+        # AÑO HIDROLÓGICO (inicia 2-abril, water_year_month=4 day=2): la decisión del
+        # año `year` rige 4/2/year -> 4/1/(year+1), valor constante (step) en la ventana.
+        for date_str in [f"4/2/{year}", f"4/1/{year + 1}"]:
             row = {"Date": date_str, **row_values}
             rows.append(row)
+
+    # Extender (HOLD del estado final de decisión) hasta el fin del año hidrológico que
+    # TERMINA en `hydro_end_year` (= 4/1/hydro_end_year, fin del año-agua = corrida WEAP).
+    # Las acciones son step irreversibles: se mantienen tras la última decisión.
+    last_year = start_year + n_years - 1          # último año-agua con decisión (e.g. 2047)
+    for year in range(last_year + 1, hydro_end_year):   # year+1 alcanza hydro_end_year
+        for date_str in [f"4/2/{year}", f"4/1/{year + 1}"]:
+            rows.append({"Date": date_str, **row_values})        # row_values = estado final
 
     df = pd.DataFrame(rows, columns=["Date"] + cols)
 
@@ -304,7 +314,7 @@ def export_iteration(
     start_id: int,
     climates: list[tuple[str, str]],
     n_balanced: int = 2,
-    start_year: int = 2025,
+    start_year: int = 2027,   # primera decisión DPS = año-agua 2027 (verificado vs time[])
     include_q_values: bool = True,
 ) -> None:
     """
@@ -396,8 +406,8 @@ def main():
                         "Convención: 0-999 factorial, 1000-1999 LHS/sintéticos, "
                         "2000+ Pareto (100 IDs por iteración).")
     p.add_argument("--output_dir",  type=Path, default=DATA_DIR / "exports")
-    p.add_argument("--start_year",  type=int, default=2025,
-                   help="Año inicial del horizonte de decisión")
+    p.add_argument("--start_year",  type=int, default=2027,
+                   help="Primer año-agua de decisión DPS (default 2027, verificado vs time[])")
     p.add_argument("--no_q",        action="store_true",
                    help="No incluir columnas q_* en el CSV de schedule")
     args = p.parse_args()

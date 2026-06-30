@@ -131,8 +131,29 @@ def evaluate_solution(pipe: PipeWEAP, solution_vars: np.ndarray) -> dict:
 
 # ─── Extractores de variables ───────────────────────────────────────────
 
+_MODEL_TIME = None
+
+
+def _model_time():
+    """Real WEAP weekly calendar from the model zarr `time[]` (cached). NO se puede
+    reconstruir con freq fija: WEAP usa 52 semanas/año alineadas al año calendario,
+    con una semana de 8 días en Dec24→Ene1 (anual) + otra en Feb26→Mar5 (bisiestos)."""
+    global _MODEL_TIME
+    if _MODEL_TIME is None:
+        import zarr
+        from weap_dps.config_weap import MODEL_REPO
+        z = zarr.open_group(str(MODEL_REPO / "data" / "weap_weekly.zarr"), mode="r")
+        _MODEL_TIME = pd.to_datetime(z["time"][:])
+    return _MODEL_TIME
+
+
 def _build_dates(n_steps: int):
-    return pd.date_range("2015-01-05", periods=n_steps, freq="W-MON")
+    t = _model_time()
+    if len(t) >= n_steps:
+        return t[:n_steps]
+    # fallback (no debería pasar para el horizonte completo de 1872 wk)
+    extra = pd.date_range(t[-1], periods=n_steps - len(t) + 1, freq="7D")[1:]
+    return t.append(extra)
 
 
 def _safe_indices(names: list[str], patterns: list[str]) -> list[int]:

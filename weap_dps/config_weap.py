@@ -8,12 +8,21 @@ horizonte debe pasar por aquí. NO hardcodear valores en otros módulos.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 # ─── Paths ─────────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR     = PROJECT_ROOT / "data_weap"
-CKPT_PATH    = DATA_DIR / "best_model.ckpt"
+# Checkpoint puede sobreescribirse por entorno (DPS_CKPT) para correr variantes
+# de modelo (v2/v3) sin tocar el default. Default = best_model.ckpt.
+CKPT_PATH    = Path(os.environ["DPS_CKPT"]) if os.environ.get("DPS_CKPT") else DATA_DIR / "best_model.ckpt"
+
+# Flag .3: si DPS_WATERFALL=1, J4 usa la cascada determinista well-anclada
+# (well nativo -> aduccion -> pozo-costero -> desal -> camiones) para derivar
+# desal/camiones como déficit con prioridad de precio, en vez de las predicciones
+# nativas del modelo. Ver weap_dps/waterfall_alloc.py.
+DPS_WATERFALL = os.environ.get("DPS_WATERFALL", "0") == "1"
 MANIFEST_PATH = DATA_DIR / "manifest_inputs.csv"
 SCALERS_PATH  = DATA_DIR / "scalers_weap.npz"
 TRANSFORM_PARAMS_PATH = DATA_DIR / "transform_params_weap.npz"
@@ -28,11 +37,16 @@ MODEL_REPO = PROJECT_ROOT.parent / "WEAP_HydroMLP_RecursiveGW"
 # El MLP fue entrenado sobre 1872 weeks (2014-04-02 → 2050-03-26, calendario WEAP).
 TOTAL_WEEKS_MLP = 1872
 
-# Para esta prueba inicial: spin-up con datos observados/históricos hasta 2024,
-# decisiones DPS desde 2025 hasta 2050 (26 años → 26 decisiones anuales).
-SPIN_UP_YEARS = 11        # 2014–2024 (semanas 0..571)
-DECISION_YEARS = 26       # 2025–2050 (semanas 572..1923, recortado a 1872)
-WARMUP_WEEKS = 104        # primeras 2 años, fixed por el MLP
+# Timeline real (week0 = 2014-04-02, año hidrológico inicia 2-abril):
+#   warmup   : wk   0..103  = 2014-04 .. 2016-04   (2 años, recursión MLP)
+#   spin-up  : wk 104..675  = 2016-04 .. 2027-04   (11 años, datos hist.)
+#   decisión : wk 676..1871 = 2027-04 .. 2050-03   (23 años-agua que caben en 1872 wk)
+# OJO: las decisiones DPS arrancan en 2027-04 (NO 2025). decision_start_week
+#   = WARMUP + SPIN_UP*52 = 104 + 572 = 676 -> 2027-04-02 (verificado vs time[].
+#   Por eso start_year del export = 2027 y BASE_YEAR = 2027.
+SPIN_UP_YEARS = 11        # 2016-04 .. 2027-04
+DECISION_YEARS = 26       # nominal; solo 23 años-agua caben en el horizonte de 1872 wk
+WARMUP_WEEKS = 104        # primeros 2 años, fixed por el MLP
 WEEKS_PER_YEAR = 52
 
 # Cuántas semanas usar en total = warmup + spin-up + decision
@@ -98,9 +112,12 @@ J_PER_KWH               = 3.6e6     # conversión J → kWh
 # ─── Anualización de costos (NPV + EAC) ────────────────────────────────────
 # Todos los flujos de caja (CAPEX y OPEX) se descuentan al año t=0 = BASE_YEAR.
 # NSGA-II minimiza el NPV total. EAC se reporta solo para interpretación.
+# NOTA: el descuento es por ÍNDICE de año-decisión (año 0 = primera decisión),
+#   así que BASE_YEAR solo fija las etiquetas calendario de display; cambiarlo
+#   NO altera los valores NPV (las fronteras del baseline siguen válidas).
 DISCOUNT_RATE       = 0.10          # 10% anual
-BASE_YEAR           = 2025          # t = 0 (inicio decisiones DPS)
-ANALYSIS_HORIZON_Y  = 23            # años de análisis (2025-2047)
+BASE_YEAR           = 2027          # t = 0 = primera decisión DPS (2027-04, verificado)
+ANALYSIS_HORIZON_Y  = 23            # años-agua de análisis (2027-2050)
 USD_CLP_RATE        = 950.0         # tipo de cambio para display USD/CLP
 
 # CAPEX + parámetros temporales por acción nueva.
@@ -136,6 +153,19 @@ ACTION_INFRA_PARAMS = {
 
 # ─── Umbrales / criterios de objetivos ─────────────────────────────────────
 J5_FAILURE_THRESHOLD_FRAC = 0.10   # semana en falla si Unmet/Demand > 10%
+
+# Calibración de J4 (costo): factor = E[costo_obs]/E[costo_pred] (agregado, 118
+# test runs). Re-derivado por variante para los modelos limpios via
+# calibrate_j4_waterfall.py (el viejo 1.22 era del modelo antiguo). El costo es
+# ~95% camiones. NO altera el orden de Pareto (factor constante), solo el valor
+# absoluto reportado. Sobreescribible por entorno DPS_J4_CAL (lo setea el runner
+# por variante):  v2=1.149  v3=1.032  v2.3=1.189  v3.3=1.184.
+J4_COST_CALIBRATION = float(os.environ.get("DPS_J4_CAL", "1.22"))
+
+# J6 (salinidad costera) ELIMINADO del problema multiobjetivo: sin zeta (interfaz
+# SWI2) la salinidad solo es discriminable de forma gruesa (régimen salino vs
+# fresco, con sesgo en escenarios frescos). El riesgo de intrusión queda capturado
+# indirectamente por J1 (storage bajo) y J4 (costo de desal/camiones).
 
 # ─── Población y áreas: valores base (escalable con multiplicador) ─────────
 POP_GROWTH_RATES = (0.02, 0.05)              # 2% y 5% anual

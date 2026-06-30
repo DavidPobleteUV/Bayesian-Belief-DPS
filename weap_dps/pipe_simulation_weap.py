@@ -18,7 +18,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from weap_dps.config_weap import (
     SPIN_UP_YEARS, DECISION_YEARS, WARMUP_WEEKS, WEEKS_PER_YEAR,
-    N_WEEKS_HORIZON,
+    N_WEEKS_HORIZON, J4_COST_CALIBRATION, DPS_WATERFALL,
 )
 from weap_dps.mlp_surrogate import MLPSurrogate
 from weap_dps.action_translator import (
@@ -63,6 +63,16 @@ class PipeWEAP:
         # Target names — vienen del surrogate (ya cargados desde el manifest)
         self.target_names_gw   = self.surrogate.target_names_gw
         self.target_names_surf = self.surrogate.target_names_surf
+
+        # .3 waterfall: allocator construido una sola vez (mapping town->links)
+        self.waterfall = None
+        if DPS_WATERFALL:
+            from weap_dps.waterfall_alloc import WaterfallAllocator
+            self.waterfall = WaterfallAllocator(
+                self.surrogate, self.feature_names, self.target_names_surf,
+            )
+            logger.info(".3 WATERFALL enabled — J4 uses well-anchored cascade "
+                        "(%d towns mapped)", len(self.waterfall.towns))
 
     # ─── Policy NN del DPS ──────────────────────────────────────────────
     def _build_policy_from_params(self, P: np.ndarray, n_state_features: int = 4):
@@ -125,6 +135,11 @@ class PipeWEAP:
             gw_denorm   = self.surrogate.denormalize_y(result["gw"],     kind="gw")
             surf_denorm = self.surrogate.denormalize_y(result["surface"], kind="surface")
 
+            # .3 waterfall: reemplaza desal/aduccion/pozo/camiones por la cascada
+            # well-anclada (y anula Acuerdo) ANTES de costear J4.
+            if self.waterfall is not None:
+                surf_denorm = self.waterfall.apply(surf_denorm, result["X_used"])
+
             objs = compute_objectives(
                 gw_denorm=gw_denorm,
                 surf_denorm=surf_denorm,
@@ -138,13 +153,16 @@ class PipeWEAP:
 
         # Promedio entre escenarios
         J_mean = np.nanmean(np.array(all_J), axis=0)
-        # NSGA minimiza → convertir J1 (maximizar storage) y J3 (maximizar valor) a min
+        # NSGA minimiza → convertir J1 (maximizar storage) y J3 (maximizar valor) a min.
+        # J6 (índice 5) se ELIMINÓ del problema (ver pipe_problem_weap.py).
+        # J4 se calibra ×J4_COST_CALIBRATION: el surrogate sub-predice el costo ~18%
+        # (sub-cuenta volumen camión/desal). Es un factor constante → NO altera el
+        # orden de Pareto, solo la fidelidad del valor absoluto reportado.
         J = [
-            -J_mean[0],   # J1 GW storage (max → neg)
-             J_mean[1],   # J2 unmet AP
-            -J_mean[2],   # J3 agri value (max → neg)
-             J_mean[3],   # J4 cost
-             J_mean[4],   # J5 weeks failure
-             J_mean[5],   # J6 salinidad costera (min)
+            -J_mean[0],                           # J1 GW storage (max → neg)
+             J_mean[1],                           # J2 unmet AP
+            -J_mean[2],                           # J3 agri value (max → neg)
+             J_mean[3] * J4_COST_CALIBRATION,     # J4 cost (calibrado)
+             J_mean[4],                           # J5 weeks failure
         ]
         return tuple(J)

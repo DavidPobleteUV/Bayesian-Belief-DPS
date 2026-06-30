@@ -19,16 +19,17 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Columnas del manifest del MLP
+# Columnas del manifest del MLP. NOTA: el nombre real usa '_(cap)' con guion bajo
+# (no ' (cap)' con espacio) — antes no hacían match (pop 0/8).
 POP_COLUMNS = [
-    "AP_Poblacion__APR_Q01_Dem_JuntaTilama (cap)",
-    "AP_Poblacion__APR_Q05_Dem_LosCondores (cap)",
-    "AP_Poblacion__APR_Q06_Dem_ElManzanoLoClaudio (cap)",
-    "AP_Poblacion__APR_Q06_Dem_Guanguali (cap)",
-    "AP_Poblacion__APR_Q09_Dem_ElEsfuerzo (cap)",
-    "AP_Poblacion__APR_Q09_Dem_LosMaquis (cap)",
-    "AP_Poblacion__APR_Q09_Dem_Quilimari (cap)",
-    "AP_Poblacion__APU_Q09_Dem_Pichidangui (cap)",
+    "AP_Poblacion__APR_Q01_Dem_JuntaTilama_(cap)",
+    "AP_Poblacion__APR_Q05_Dem_LosCondores_(cap)",
+    "AP_Poblacion__APR_Q06_Dem_ElManzanoLoClaudio_(cap)",
+    "AP_Poblacion__APR_Q06_Dem_Guanguali_(cap)",
+    "AP_Poblacion__APR_Q09_Dem_ElEsfuerzo_(cap)",
+    "AP_Poblacion__APR_Q09_Dem_LosMaquis_(cap)",
+    "AP_Poblacion__APR_Q09_Dem_Quilimari_(cap)",
+    "AP_Poblacion__APU_Q09_Dem_Pichidangui_(cap)",
 ]
 
 AREA_COLUMNS = [
@@ -36,8 +37,14 @@ AREA_COLUMNS = [
     for i in range(1, 7) for tech in ("Goteo", "Microaspersion")
 ]
 
+# Las 8 columnas de demanda potable (escalan con población), no solo 3.
 DEMAND_AP_COLUMNS = [
+    "AP_WaterDemand__APR_Q01_Dem_JuntaTilama",
+    "AP_WaterDemand__APR_Q05_Dem_LosCondores",
+    "AP_WaterDemand__APR_Q06_Dem_ElManzanoLoClaudio",
+    "AP_WaterDemand__APR_Q06_Dem_Guanguali",
     "AP_WaterDemand__APR_Q09_Dem_ElEsfuerzo",
+    "AP_WaterDemand__APR_Q09_Dem_LosMaquis",
     "AP_WaterDemand__APR_Q09_Dem_Quilimari",
     "AP_WaterDemand__APU_Q09_Dem_Pichidangui",
 ]
