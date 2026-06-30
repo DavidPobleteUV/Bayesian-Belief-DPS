@@ -95,18 +95,28 @@ PRECIO_PALTO_CLP_PER_KG = 2200.0                    # CLP/kg (Poblete et al. 202
 REFERENCE_DIR = DATA_DIR / "reference"
 TOWN_SOURCE_COST_CSV = REFERENCE_DIR / "town_source_cost_mapping.csv"
 
-# Tarifa fija para Acuerdo (DemAGRO_SHAC_*_fict → town), CLP/m³
-TARIFA_ACUERDO_CLP_PER_M3 = 3500.0
+# Costos unitarios por tipo de fuente (CLP/m³), PARÁMETROS tuneables.
+# El CSV town_source_cost_mapping.csv solo MAPEA qué nodo es cada tipo; el
+# PRECIO sale de aquí → sensibilidad/robustez sin re-simular ni regenerar el zarr.
+UNIT_COST_BY_SOURCE = {
+    "Camiones":    8000.0,
+    "Desal":       2300.0,
+    "Aduccion":    1200.0,
+    "PozoCostero": 1500.0,
+    "Acuerdo":     2500.0,
+}
+# Compat: fallback de Acuerdo (= UNIT_COST_BY_SOURCE["Acuerdo"])
+TARIFA_ACUERDO_CLP_PER_M3 = UNIT_COST_BY_SOURCE["Acuerdo"]
 
 # ─── Parámetros para costo eléctrico de bombeo (pozos regulares) ───────────
 # Aplica SOLO a transmission links desde APR_Q*_Fict_<town> (pozos baseline
 # de cada utility). PozoCostero, Desal, Aduccion, Camiones, Acuerdo usan
-# costos fijos del CSV.
+# UNIT_COST_BY_SOURCE (arriba).
 PUMPING_RHO_KG_PER_M3   = 1000.0    # densidad del agua
 PUMPING_G_M_PER_S2      = 9.81      # gravedad
 PUMPING_EFFICIENCY      = 0.80      # eficiencia del sistema (80%)
 PUMPING_EXTRA_LIFT_M    = 10.0      # carga adicional sobre depth_to_water
-ENERGY_PRICE_CLP_PER_KWH = 250.0    # CLP/kWh
+ENERGY_PRICE_CLP_PER_KWH = 300.0    # CLP/kWh (alineado con WEAP_2_ZARR)
 J_PER_KWH               = 3.6e6     # conversión J → kWh
 
 # ─── Anualización de costos (NPV + EAC) ────────────────────────────────────

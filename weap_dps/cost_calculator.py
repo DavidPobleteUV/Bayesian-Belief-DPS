@@ -25,6 +25,7 @@ import numpy as np
 from weap_dps.config_weap import (
     PRECIO_PALTO_CLP_PER_KG,
     TARIFA_ACUERDO_CLP_PER_M3,
+    UNIT_COST_BY_SOURCE,
     TOWN_SOURCE_COST_CSV,
     PUMPING_RHO_KG_PER_M3, PUMPING_G_M_PER_S2,
     PUMPING_EFFICIENCY, PUMPING_EXTRA_LIFT_M,
@@ -370,7 +371,9 @@ def j4_supply_cost(
         elif source.startswith("Withdrawal Node") or source.startswith("Withdrawal_Node"):
             node = source.replace("Withdrawal_Node", "").replace("Withdrawal Node", "").strip("_ ").strip()
             if node in lookup:
-                src_type, unit_cost, _town = lookup[node]
+                src_type, _csv_cost, _town = lookup[node]
+                # PRECIO desde UNIT_COST_BY_SOURCE (parámetro); el CSV solo da el tipo.
+                unit_cost = UNIT_COST_BY_SOURCE.get(src_type, _csv_cost)
                 yearly_vol = _weekly_to_yearly(flow_per_week, n_years)  # m³/año
                 yearly_cost = yearly_vol * unit_cost
                 if src_type in yearly_opex_by_type:
@@ -384,10 +387,8 @@ def j4_supply_cost(
 
         # ── Tipo 3: Acuerdo (DemAGRO_SHAC_*_fict) ──────────────────────
         elif source.startswith("DemAGRO_SHAC"):
-            if source in lookup:
-                _src_type, unit_cost, _town = lookup[source]
-            else:
-                unit_cost = TARIFA_ACUERDO_CLP_PER_M3
+            # PRECIO del Acuerdo desde UNIT_COST_BY_SOURCE (parámetro tuneable).
+            unit_cost = UNIT_COST_BY_SOURCE.get("Acuerdo", TARIFA_ACUERDO_CLP_PER_M3)
             yearly_vol = _weekly_to_yearly(flow_per_week, n_years)
             yearly_cost = yearly_vol * unit_cost
             yearly_opex_by_type["Acuerdo"] += yearly_cost
