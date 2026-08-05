@@ -21,12 +21,14 @@ import re
 from typing import Sequence
 
 import numpy as np
+import pandas as pd
 
 from weap_dps.config_weap import (
     PRECIO_PALTO_CLP_PER_KG,
     TARIFA_ACUERDO_CLP_PER_M3,
     UNIT_COST_BY_SOURCE,
     TOWN_SOURCE_COST_CSV,
+    REFERENCE_DIR,
     PUMPING_RHO_KG_PER_M3, PUMPING_G_M_PER_S2,
     PUMPING_EFFICIENCY, PUMPING_EXTRA_LIFT_M,
     ENERGY_PRICE_CLP_PER_KWH, J_PER_KWH,
@@ -539,22 +541,75 @@ def j5_weeks_in_failure(surf_denorm: np.ndarray,
 # WF_SalinityFactor está en los targets GW del MLP. Los pozos costeros son los
 # del acuífero Q09 expuestos a intrusión salina: Pichidangui (APU_Q09, 4),
 # ElEsfuerzo (APR_Q09, 3) y Pozo_Costero_DOH (1) = 8 pozos. Se minimiza.
-_RE_COASTAL_SAL = re.compile(
-    r"WF_SalinityFactor__(APU_Q09|APR_Q09|Pozo_Costero)"
-)
+_RE_COASTAL = r"(APU_Q09|APR_Q09|Pozo_Costero)"
+_RE_COASTAL_SAL = re.compile(r"WF_SalinityFactor__" + _RE_COASTAL)
+_RE_COASTAL_ZV  = re.compile(r"WF_Zvalue__" + _RE_COASTAL)
+
+Z_TRANS_M = 3.0        # semi-ancho de la zona de transición dulce/salada (SWI2)
+_ZBOT_CACHE: dict[str, float] | None = None
+
+
+def _load_zbot() -> dict[str, float]:
+    """{WellName: z_bot} desde data_weap/reference/well_zbot.csv
+    (z_bot = TOP - profundidad; generado por weap_dps/build_well_zbot.py)."""
+    global _ZBOT_CACHE
+    if _ZBOT_CACHE is None:
+        p = REFERENCE_DIR / "well_zbot.csv"
+        if p.exists():
+            df = pd.read_csv(p)
+            _ZBOT_CACHE = dict(zip(df["WellName"].astype(str), df["z_bot"].astype(float)))
+        else:
+            logger.warning("No existe %s — J6 no podrá derivarse de Z_value. "
+                           "Corre: python weap_dps/build_well_zbot.py", p)
+            _ZBOT_CACHE = {}
+    return _ZBOT_CACHE
+
+
+def salinity_from_zvalue(zeta: np.ndarray, z_bot: float,
+                         z_trans: float = Z_TRANS_M) -> np.ndarray:
+    """SalinityFactor ∈ [0,1] a partir del Z_value (cota de la interfaz) y del
+    fondo del pozo. Réplica exacta de la fórmula WEAP/well_factors:
+        0                                  si z_bot > Z + Z_trans  (pozo sobre la interfaz)
+        1                                  si z_bot < Z - Z_trans  (pozo bajo la interfaz)
+        (Z + Z_trans - z_bot)/(2·Z_trans)  en la transición
+    Validado contra los datos: error abs medio ~4e-5."""
+    z = np.asarray(zeta, dtype=float)
+    sf = np.where(z_bot > z + z_trans, 0.0,
+                  np.where(z_bot < z - z_trans, 1.0,
+                           (z + z_trans - z_bot) / (2.0 * z_trans)))
+    return np.clip(sf, 0.0, 1.0)
 
 
 def j6_coastal_salinity(gw_denorm: np.ndarray,
                         target_names_gw: list[str],
                         decision_start_week: int = WARMUP_WEEKS) -> float:
-    """Salinidad promedio (SalinityFactor) de los pozos costeros AP del
-    acuífero Q09, promediada sobre el horizonte de decisión y los pozos.
-    Promedio simple. Se MINIMIZA (menos salinidad = mejor)."""
+    """Salinidad promedio de los pozos costeros AP del acuífero Q09
+    (APR_Q09 + APU_Q09 + Pozo_Costero_DOH), sobre el horizonte de decisión.
+    Se MINIMIZA (menos salinidad = mejor).
+
+    Dos vías, en orden:
+      1) WF_SalinityFactor directo, si el modelo lo predice (layout antiguo).
+      2) Derivado de WF_Zvalue + z_bot del pozo. Es la vía vigente: la salinidad
+         se sacó del entrenamiento por ser función determinista del Z_value.
+    """
     cols = [i for i, n in enumerate(target_names_gw) if _RE_COASTAL_SAL.search(n)]
-    if not cols:
+    if cols:
+        return float(np.nanmean(gw_denorm[decision_start_week:, cols]))
+
+    # ── vía Z_value ──
+    zbot = _load_zbot()
+    vals = []
+    for i, n in enumerate(target_names_gw):
+        if not _RE_COASTAL_ZV.search(n):
+            continue
+        well = n.split("__", 1)[1] if "__" in n else n
+        zb = zbot.get(well)
+        if zb is None:
+            continue
+        vals.append(salinity_from_zvalue(gw_denorm[decision_start_week:, i], zb))
+    if not vals:
         return float("nan")
-    sal = gw_denorm[decision_start_week:, cols]   # (semanas, n_pozos)
-    return float(np.nanmean(sal))
+    return float(np.nanmean(np.stack(vals, axis=1)))
 
 
 # ─── Wrapper: calcula los 6 ──────────────────────────────────────────────

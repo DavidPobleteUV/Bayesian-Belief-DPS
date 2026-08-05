@@ -47,10 +47,11 @@ TOTAL_WEEKS_MLP = 2392
 #   = WARMUP + SPIN_UP*52 = 104 + 572 = 676 -> 2027-04-02 (verificado vs time[].
 #   Por eso start_year del export = 2027 y BASE_YEAR = 2027.
 SPIN_UP_YEARS = 11        # 2016-04 .. 2027-04
-# Con 2392 wk los 26 años nominales SÍ caben (antes se truncaban a 23 por el
-# horizonte de 1872). Se puede subir hasta 33 para usar todo el horizonte nuevo;
-# si lo cambias, ajusta ANALYSIS_HORIZON_Y para que J4 anualice el mismo período.
-DECISION_YEARS = 26
+# 33 = TODO el horizonte del MLP nuevo: (2392 - 104 - 11*52)/52 = 1716/52 = 33
+# años-agua de decisión (2027-04 .. 2060-03). Con el modelo viejo (1872 wk) solo
+# cabían 23. Si cambias este valor, mueve ANALYSIS_HORIZON_Y igual para que J4
+# anualice exactamente el período simulado.
+DECISION_YEARS = 33
 WARMUP_WEEKS = 104        # primeros 2 años, fixed por el MLP
 WEEKS_PER_YEAR = 52
 
@@ -142,10 +143,10 @@ DISCOUNT_RATE       = 0.10          # 10% anual
 BASE_YEAR           = 2027          # t = 0 = primera decisión DPS (2027-04, verificado)
 # Debe coincidir con los años de decisión que SIMULA el rollout:
 #   (N_WEEKS_HORIZON - WARMUP_WEEKS - SPIN_UP_YEARS*52) / 52
-# Con el MLP de 2392 wk son 26 (antes 23, truncados por el horizonte de 1872).
-# Si subes DECISION_YEARS, sube esto también o J4 anualizará un período distinto
-# al simulado.
-ANALYSIS_HORIZON_Y  = 26            # años-agua de análisis (2027-2053)
+# Con el MLP de 2392 wk son 33 (antes 23, truncados por el horizonte de 1872).
+# Si cambias DECISION_YEARS, cambia esto también o J4 anualizará un período
+# distinto al simulado.
+ANALYSIS_HORIZON_Y  = 33            # años-agua de análisis (2027-2060)
 USD_CLP_RATE        = 950.0         # tipo de cambio para display USD/CLP
 
 # CAPEX + parámetros temporales por acción nueva.

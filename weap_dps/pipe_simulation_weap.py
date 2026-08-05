@@ -154,7 +154,8 @@ class PipeWEAP:
         # Promedio entre escenarios
         J_mean = np.nanmean(np.array(all_J), axis=0)
         # NSGA minimiza → convertir J1 (maximizar storage) y J3 (maximizar valor) a min.
-        # J6 (índice 5) se ELIMINÓ del problema (ver pipe_problem_weap.py).
+        # J6 (índice 5) REINCORPORADO: se deriva del Z_value predicho (ver
+        # cost_calculator.j6_coastal_salinity). Ya se minimiza tal cual.
         # J4 se calibra ×J4_COST_CALIBRATION: el surrogate sub-predice el costo ~18%
         # (sub-cuenta volumen camión/desal). Es un factor constante → NO altera el
         # orden de Pareto, solo la fidelidad del valor absoluto reportado.
@@ -164,5 +165,6 @@ class PipeWEAP:
             -J_mean[2],                           # J3 agri value (max → neg)
              J_mean[3] * J4_COST_CALIBRATION,     # J4 cost (calibrado)
              J_mean[4],                           # J5 weeks failure
+             J_mean[5],                           # J6 salinidad costera (min)
         ]
         return tuple(J)

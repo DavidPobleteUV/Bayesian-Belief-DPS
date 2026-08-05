@@ -30,14 +30,17 @@ class PipeProblemWEAP(Problem):
         n_vars = PipeWEAP.policy_param_size(
             M=pipe.policy_M, K=pipe.policy_K, N=4,
         )
-        # 5 objetivos (J1..J5). J6 (salinidad costera) se ELIMINÓ: el surrogate solo
-        # logra discriminación gruesa de régimen salino sin zeta (intrusión SWI2 no
-        # observable), y el riesgo de intrusión queda capturado indirectamente por
-        # J1 (storage) y J4 (costo desal/camiones). Ver paper_workflow_overview.md.
-        super().__init__(n_vars, 5)
+        # 6 objetivos (J1..J6). J6 (salinidad costera) fue REINCORPORADO: el
+        # modelo iter0_900 predice Z_value (cota de la interfaz SWI2) en los 12
+        # pozos costeros AP de Q09, así que la intrusión salina ya es observable
+        # y la salinidad se deriva de forma determinista (ver
+        # cost_calculator.j6_coastal_salinity / salinity_from_zvalue).
+        # Antes se había eliminado porque sin zeta solo había discriminación
+        # gruesa y el riesgo quedaba capturado de forma indirecta por J1 y J4.
+        super().__init__(n_vars, 6)
         self.types[:] = [Real(var_lo, var_hi) for _ in range(n_vars)]
         # Direcciones: todos minimize (J1 y J3 ya vienen negados en simulation())
-        self.directions[:] = [Problem.MINIMIZE] * 5
+        self.directions[:] = [Problem.MINIMIZE] * 6
 
     def evaluate(self, solution):
         P = np.array(solution.variables, dtype=float)

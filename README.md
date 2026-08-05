@@ -10,7 +10,7 @@ This repository contains the research code for the Bayesian-Belief Direct Policy
   │  simulación física │ ─────▶ │      surrogate (MLP)      │ ─────▶ │  optimización de política│
   │                    │        │                           │        │                         │
   │ WEAP–MODFLOW corre │        │ normaliza + entrena       │        │ DPS NSGA-II: policy NN  │
-  │ los run_ids   →    │        │ v2/v3 (cascade) →         │        │ → 5 objetivos (J1..J5)  │
+  │ los run_ids   →    │        │ v2/v3 (cascade) →         │        │ → 6 objetivos (J1..J6)  │
   │ weap_weekly.zarr   │        │ X_filtered / Y_filtered   │        │ Robust: clima × demanda │
   └─────────▲──────────┘        └───────────────────────────┘        └────────────┬────────────┘
             │                                                                      │
@@ -74,7 +74,8 @@ pip install numpy pandas matplotlib seaborn numba scikit-learn statsmodels platy
 Aplicación del DPS al caso Quilimari usando el surrogate WEAP-HydroMLP como modelo de
 sistema (en vez del modelo analítico del paper). El optimizador NSGA-II entrena una policy
 NN que decide **4 acciones** (desal costera, desal completa, nuevo pozo a 5 km, **acuerdo**)
-sobre **5 objetivos** (J1 storage, J2 unmet, J3 agri, J4 cost, J5 failure weeks).
+sobre **6 objetivos** (J1 storage, J2 unmet, J3 agri, J4 cost, J5 failure weeks,
+J6 salinidad costera).
 
 > **Set de acciones (K=4).** Las dos acciones de *prorrateo* (SHAC/cuenca) fueron
 > ELIMINADAS del catálogo WEAP por no generar mejoras, y se incorporó **acuerdo**
@@ -83,13 +84,17 @@ sobre **5 objetivos** (J1 storage, J2 unmet, J3 agri, J4 cost, J5 failure weeks)
 > `act_*` de `../WEAP_2_ZARR/data/RunIDs_Q_full.csv`.
 >
 > **Horizonte.** Con el MLP `iter0_900` (900 runs, 2392 semanas: 2014-04 → 2060-03)
-> los 26 años de decisión (2027-2053) caben completos; con el modelo anterior
-> (1872 wk → 2050-03) se truncaban a 23. `TOTAL_WEEKS_MLP` y `ANALYSIS_HORIZON_Y`
+> el horizonte de decisión llega a **33 años (2027-2060)**; con el modelo anterior
+> (1872 wk → 2050-03) se truncaba a 23. `TOTAL_WEEKS_MLP`, `DECISION_YEARS` y `ANALYSIS_HORIZON_Y`
 > en `config_weap.py` deben moverse juntos al cambiar de checkpoint.
 
 - `weap_dps/mlp_surrogate.py` — wrapper del checkpoint WEAP-HydroMLP (rollout año a año).
 - `weap_dps/pipe_simulation_weap.py` / `pipe_problem_weap.py` — bridge simulación↔objetivos.
-- `weap_dps/cost_calculator.py` — J1..J5 desde las salidas denormalizadas del MLP.
+- `weap_dps/cost_calculator.py` — J1..J6 desde las salidas denormalizadas del MLP.
+  J6 (salinidad costera) se **deriva del Z_value** predicho + geometría del pozo
+  (`salinity_from_zvalue`), porque `WF_SalinityFactor` se sacó del entrenamiento
+  por ser función determinista de ambos. Requiere `data_weap/reference/well_zbot.csv`
+  (lo genera `weap_dps/build_well_zbot.py`).
 - `weap_dps/main_par_weap.py` — DPS de **escenario único** (clima/demanda del run-0).
 - Flags de entorno: `DPS_CKPT` (variante v2/v3), `DPS_WATERFALL` (.3, cascada well-anclada
   para J4), `DPS_J4_CAL` (calibración de costo por variante).
