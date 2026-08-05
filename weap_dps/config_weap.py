@@ -34,18 +34,23 @@ RESULTS_DIR  = PROJECT_ROOT / "runs_weap"
 MODEL_REPO = PROJECT_ROOT.parent / "WEAP_HydroMLP_RecursiveGW"
 
 # ─── Horizonte temporal ────────────────────────────────────────────────────
-# El MLP fue entrenado sobre 1872 weeks (2014-04-02 → 2050-03-26, calendario WEAP).
-TOTAL_WEEKS_MLP = 1872
+# MLP iter0_900 (900 runs): 2392 weeks (2014-04-02 → 2060-03, calendario WEAP).
+# El modelo ANTERIOR era de 1872 weeks (→2050-03); si vuelves a ese checkpoint,
+# hay que revertir este valor o el surrogate fallará por shape.
+TOTAL_WEEKS_MLP = 2392
 
 # Timeline real (week0 = 2014-04-02, año hidrológico inicia 2-abril):
-#   warmup   : wk   0..103  = 2014-04 .. 2016-04   (2 años, recursión MLP)
-#   spin-up  : wk 104..675  = 2016-04 .. 2027-04   (11 años, datos hist.)
-#   decisión : wk 676..1871 = 2027-04 .. 2050-03   (23 años-agua que caben en 1872 wk)
+#   warmup   : wk   0..103   = 2014-04 .. 2016-04  (2 años, recursión MLP)
+#   spin-up  : wk 104..675   = 2016-04 .. 2027-04  (11 años, datos hist.)
+#   decisión : wk 676..2391  = 2027-04 .. 2060-03  (33 años-agua disponibles)
 # OJO: las decisiones DPS arrancan en 2027-04 (NO 2025). decision_start_week
 #   = WARMUP + SPIN_UP*52 = 104 + 572 = 676 -> 2027-04-02 (verificado vs time[].
 #   Por eso start_year del export = 2027 y BASE_YEAR = 2027.
 SPIN_UP_YEARS = 11        # 2016-04 .. 2027-04
-DECISION_YEARS = 26       # nominal; solo 23 años-agua caben en el horizonte de 1872 wk
+# Con 2392 wk los 26 años nominales SÍ caben (antes se truncaban a 23 por el
+# horizonte de 1872). Se puede subir hasta 33 para usar todo el horizonte nuevo;
+# si lo cambias, ajusta ANALYSIS_HORIZON_Y para que J4 anualice el mismo período.
+DECISION_YEARS = 26
 WARMUP_WEEKS = 104        # primeros 2 años, fixed por el MLP
 WEEKS_PER_YEAR = 52
 
@@ -57,12 +62,14 @@ N_WEEKS_HORIZON = min(TOTAL_WEEKS_MLP, WARMUP_WEEKS + (SPIN_UP_YEARS + DECISION_
 # MLP cada acción aparece SOLO con un único valor de cantidad (q canónico), así
 # que NO hay decisión continua: al activarse una binaria se inyecta su q fijo.
 # Tratarlas como continuas haría que el MLP extrapole a cantidades nunca vistas.
+# Set vigente (K=4): las dos acciones de prorrateo fueron ELIMINADAS del catálogo
+# WEAP (no generaban mejoras) y se incorporó "acuerdo". Coincide con los 4 pares
+# act_*/q_* que mergea el pipeline de WEAP_2_ZARR en el zarr de entrenamiento.
 ACTION_NAMES_BINARY = [
     "act_desalacion_costera",
     "act_desalacion_completa",
-    "act_prorrateo_shac",
-    "act_prorrateo_cuenca",
     "act_nuevo_pozo_a_5km",
+    "act_acuerdo",
 ]
 
 # q canónico (valor único observado en el zarr de entrenamiento) que se inyecta
@@ -70,18 +77,24 @@ ACTION_NAMES_BINARY = [
 CANONICAL_Q = {
     "q_desalacion_costera":  0.1,    # planta pequeña
     "q_desalacion_completa": 0.3,    # planta grande
-    "q_prorrateo_shac":      0.85,
-    "q_prorrateo_cuenca":    0.7,
     "q_nuevo_pozo_a_5km":    0.12,
+    "q_acuerdo":             0.025,  # reasignación agro→AP (sin obra)
 }
 
 # Nombres de las columnas q en el MISMO orden que ACTION_NAMES_BINARY.
 ACTION_NAMES_QUANTITY = [
     "q_desalacion_costera",
     "q_desalacion_completa",
-    "q_prorrateo_shac",
-    "q_prorrateo_cuenca",
     "q_nuevo_pozo_a_5km",
+    "q_acuerdo",
+]
+
+# Acciones de INFRAESTRUCTURA: su construcción es irreversible (built = cummax).
+# El acuerdo NO está aquí: es administrativo, reversible y sin costo hundido.
+ACTION_NAMES_INFRA = [
+    "act_desalacion_costera",
+    "act_desalacion_completa",
+    "act_nuevo_pozo_a_5km",
 ]
 
 # Compat: bounds degenerados (lo=hi=canónico). Ya NO se usan como rango de
@@ -127,7 +140,12 @@ J_PER_KWH               = 3.6e6     # conversión J → kWh
 #   NO altera los valores NPV (las fronteras del baseline siguen válidas).
 DISCOUNT_RATE       = 0.10          # 10% anual
 BASE_YEAR           = 2027          # t = 0 = primera decisión DPS (2027-04, verificado)
-ANALYSIS_HORIZON_Y  = 23            # años-agua de análisis (2027-2050)
+# Debe coincidir con los años de decisión que SIMULA el rollout:
+#   (N_WEEKS_HORIZON - WARMUP_WEEKS - SPIN_UP_YEARS*52) / 52
+# Con el MLP de 2392 wk son 26 (antes 23, truncados por el horizonte de 1872).
+# Si subes DECISION_YEARS, sube esto también o J4 anualizará un período distinto
+# al simulado.
+ANALYSIS_HORIZON_Y  = 26            # años-agua de análisis (2027-2053)
 USD_CLP_RATE        = 950.0         # tipo de cambio para display USD/CLP
 
 # CAPEX + parámetros temporales por acción nueva.
@@ -149,13 +167,8 @@ ACTION_INFRA_PARAMS = {
         "construction_lead_years":  1,
         "lifetime_years":           30,
     },
-    "act_prorrateo_shac": {
-        "capex_clp":                0.0,      # administrativo, sin infra
-        "construction_lead_years":  0,
-        "lifetime_years":           25,
-    },
-    "act_prorrateo_cuenca": {
-        "capex_clp":                0.0,      # administrativo, sin infra
+    "act_acuerdo": {
+        "capex_clp":                0.0,      # administrativo, sin obra: solo OPEX
         "construction_lead_years":  0,
         "lifetime_years":           25,
     },

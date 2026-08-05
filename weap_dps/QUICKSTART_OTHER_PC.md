@@ -101,28 +101,59 @@ Tiempo aprox: **5–8 minutos** (la mayor parte es pip install de torch).
 Estos archivos NO están en GitHub porque son grandes. Hay que copiarlos
 manualmente desde la PC original a la nueva (USB, OneDrive, SCP, etc.).
 
-| Archivo | Origen (PC vieja) | Destino (PC nueva) | Tamaño aprox |
-|---|---|---|---|
-| Checkpoint MLP | `WEAP_HydroMLP_RecursiveGW\runs\best_model.ckpt` | mismo path | ~4 MB |
-| Zarr training | `WEAP_HydroMLP_RecursiveGW\data\weap_weekly.zarr\` | mismo path | ~1 GB |
-| Scalers | `WEAP_HydroMLP_RecursiveGW\data\scalers_weap.npz` | mismo path | ~22 KB |
-| Transform | `WEAP_HydroMLP_RecursiveGW\data\transform_params_weap.npz` | mismo path | ~15 KB |
-| Manifest | `WEAP_HydroMLP_RecursiveGW\data\variables_mlp_weekly_filtered.csv` | mismo path | ~100 KB |
-| WEAP area (si vas a correr WEAP) | `C:\Users\<orig>\Documents\WEAP Areas\Quilimari_WEAP_MODFLOW_RDM\` | mismo path adaptado | ~varios GB |
+### Opción A (recomendada) — copiar solo los 4 artefactos que consume el DPS
 
-**Verificación post-transferencia:**
+Si en la PC nueva **solo vas a correr el DPS** (no re-entrenar el MLP), basta con
+copiar la carpeta `Bayesian-Belief-DPS\data_weap\`. Son ~5 MB y ya vienen con
+todo resuelto (índices, sub-set de columnas, template del horizonte correcto):
+
+| Archivo (dentro de `data_weap\`) | Qué es | Tamaño |
+|---|---|---|
+| `best_model.ckpt` | checkpoint del MLP | ~5 MB |
+| `scalers_weap.npz` | medias/desv. para denormalizar | ~30 KB |
+| `transform_params_weap.npz` | log/arcsinh por variable | ~15 KB |
+| `manifest_inputs.csv` | manifest FILTRADO del modelo | ~100 KB |
+| `X_template.npz` | esqueleto de X + índices gw/surface | ~5 MB |
+
+> ⚠️ Los cinco tienen que venir del **mismo modelo**. Mezclar un checkpoint nuevo
+> con scalers viejos desnormaliza mal y **en silencio** (no lanza error).
+
+**Verificación:**
 
 ```powershell
-cd $REPOS_ROOT\WEAP_HydroMLP_RecursiveGW
-Test-Path runs\best_model.ckpt                            # True
-Test-Path data\weap_weekly.zarr                            # True (carpeta)
-Test-Path data\variables_mlp_weekly_filtered.csv           # True
-Test-Path data\scalers_weap.npz                            # True
-Test-Path data\transform_params_weap.npz                   # True
-
-# Si vas a correr WEAP:
-Test-Path "$HOME\Documents\WEAP Areas\Quilimari_WEAP_MODFLOW_RDM"  # True
+cd $REPOS_ROOT\Bayesian-Belief-DPS
+foreach ($f in "best_model.ckpt","scalers_weap.npz","transform_params_weap.npz",
+                "manifest_inputs.csv","X_template.npz") {
+  "{0,-32} {1}" -f $f, (Test-Path "data_weap\$f")
+}
+# smoke test: carga el surrogate y valida dimensiones
+python -c "import sys; sys.path.insert(0,'.'); from weap_dps.mlp_surrogate import MLPSurrogate; s=MLPSurrogate(); print(f'OK n_x={s.n_x} n_gw={s.n_gw} n_surface={s.n_surface}')"
 ```
+
+Con el modelo `iter0_900` debe imprimir `OK n_x=519 n_gw=531 n_surface=126`.
+
+### Opción B — copiar el repo del modelo completo (para re-entrenar)
+
+| Archivo | Origen (PC vieja) | Destino (PC nueva) | Tamaño aprox |
+|---|---|---|---|
+| Zarr training | `WEAP_HydroMLP_RecursiveGW\data\_v3_900\weap_weekly_merged.zarr\` | mismo path | ~6 GB |
+| Checkpoints | `WEAP_HydroMLP_RecursiveGW\runs\iter0_900\*.ckpt` | mismo path | ~30 MB |
+| Scalers/transform/manifest | `WEAP_HydroMLP_RecursiveGW\data\_v3_900\*` | mismo path | ~150 KB |
+| WEAP area (si vas a correr WEAP) | `C:\Users\<orig>\Documents\WEAP Areas\Quilimari_WEAP_MODFLOW_RDM\` | mismo path adaptado | ~varios GB |
+
+Luego regenerar los artefactos del DPS:
+
+```powershell
+cd $REPOS_ROOT\Bayesian-Belief-DPS
+python weap_dps\extract_data.py `
+  --checkpoint "runs\iter0_900\best_model-epoch=042-val_loss=0.0533.ckpt" `
+  --zarr     "data\_v3_900\weap_weekly_merged.zarr" `
+  --manifest "data\_v3_900\variables_mlp_weekly_filtered.csv"
+```
+
+`--zarr` y `--manifest` son **obligatorios** si el modelo no está en el layout
+antiguo (`data\weap_weekly.zarr`): de ellos salen el sub-set de columnas de X
+(527→519) y los índices gw/surface que el surrogate necesita.
 
 ---
 

@@ -99,11 +99,11 @@ def build_synthetic_rows(start_id: int) -> list[dict]:
     for i, scen in enumerate(SYNTHETIC_SCENARIOS):
         rows.append({
             "ID": start_id + i,
+            # Set vigente (K=4): prorrateo eliminado del catálogo, acuerdo añadido.
             "act_desalacion_costera":   1,
             "act_desalacion_completa":  1,
-            "act_prorrateo_shac":       1,
-            "act_prorrateo_cuenca":     1,
             "act_nuevo_pozo_a_5km":     1,
+            "act_acuerdo":              1,
             "GCM": scen["GCM"],
             "SSP": scen["SSP"],
             "drought_severity":     scen["drought_severity"],
@@ -140,7 +140,7 @@ def main():
     cols_order = [
         "ID",
         "act_desalacion_costera", "act_desalacion_completa",
-        "act_prorrateo_shac", "act_prorrateo_cuenca", "act_nuevo_pozo_a_5km",
+        "act_nuevo_pozo_a_5km", "act_acuerdo",
         "GCM", "SSP",
         "drought_severity", "drought_duration", "drought_start_year",
         "temperature_delta", "drought_severity_mode",

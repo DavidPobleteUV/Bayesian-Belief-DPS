@@ -52,8 +52,8 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 
-# El MLP ahora conoce las 5 acciones (incl. prorrateo_cuenca y nuevo_pozo_a_5km),
-# así que no hay acciones "desconocidas" que fijar en 0.
+# El MLP conoce las 4 acciones vigentes (desal costera, desal completa,
+# pozo a 5km, acuerdo), así que no hay acciones "desconocidas" que fijar en 0.
 ACTIONS_UNKNOWN_TO_MLP = []
 
 OBJECTIVE_NAMES = [
@@ -253,8 +253,11 @@ def build_master_csv(
     # Orden de columnas recomendado para diff visual con RunIDs_Q_lhs_extreme
     cols_order = [
         "ID",
+        # Set vigente (K=4): prorrateo_shac/cuenca fueron ELIMINADAS del catálogo
+        # WEAP y se incorporó acuerdo. Debe calzar con ACTION_NAMES_BINARY y con
+        # las columnas de data/RunIDs_Q_full.csv del proyecto WEAP_2_ZARR.
         "act_desalacion_costera", "act_desalacion_completa",
-        "act_prorrateo_shac", "act_prorrateo_cuenca", "act_nuevo_pozo_a_5km",
+        "act_nuevo_pozo_a_5km", "act_acuerdo",
         "GCM", "SSP",
         "drought_severity", "drought_duration", "drought_start_year",
         "temperature_delta", "drought_severity_mode",
@@ -355,9 +358,9 @@ def export_iteration(
             }
             runs_master.append({
                 "ID": current_id,
+                # act_year1 ya trae las 4 binarias vigentes desde
+                # ACTION_NAMES_BINARY; no hay acciones extra que fijar en 0.
                 **act_year1,
-                "act_prorrateo_cuenca":  0,
-                "act_nuevo_pozo_a_5km":  0,
                 "GCM": gcm,
                 "SSP": ssp,
                 "drought_severity":   "",

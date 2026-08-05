@@ -73,8 +73,19 @@ pip install numpy pandas matplotlib seaborn numba scikit-learn statsmodels platy
 
 Aplicación del DPS al caso Quilimari usando el surrogate WEAP-HydroMLP como modelo de
 sistema (en vez del modelo analítico del paper). El optimizador NSGA-II entrena una policy
-NN que decide 5 acciones (desal costera/completa, prorrateo SHAC/cuenca, nuevo pozo) sobre
-5 objetivos (J1 storage, J2 unmet, J3 agri, J4 cost, J5 failure weeks).
+NN que decide **4 acciones** (desal costera, desal completa, nuevo pozo a 5 km, **acuerdo**)
+sobre **5 objetivos** (J1 storage, J2 unmet, J3 agri, J4 cost, J5 failure weeks).
+
+> **Set de acciones (K=4).** Las dos acciones de *prorrateo* (SHAC/cuenca) fueron
+> ELIMINADAS del catálogo WEAP por no generar mejoras, y se incorporó **acuerdo**
+> (los nodos AP pueden extraer de los nodos subterráneos que abastecen demanda
+> agrícola, a menor costo que el camión aljibe). Debe calzar con las columnas
+> `act_*` de `../WEAP_2_ZARR/data/RunIDs_Q_full.csv`.
+>
+> **Horizonte.** Con el MLP `iter0_900` (900 runs, 2392 semanas: 2014-04 → 2060-03)
+> los 26 años de decisión (2027-2053) caben completos; con el modelo anterior
+> (1872 wk → 2050-03) se truncaban a 23. `TOTAL_WEEKS_MLP` y `ANALYSIS_HORIZON_Y`
+> en `config_weap.py` deben moverse juntos al cambiar de checkpoint.
 
 - `weap_dps/mlp_surrogate.py` — wrapper del checkpoint WEAP-HydroMLP (rollout año a año).
 - `weap_dps/pipe_simulation_weap.py` / `pipe_problem_weap.py` — bridge simulación↔objetivos.
@@ -95,8 +106,7 @@ NN que decide 5 acciones (desal costera/completa, prorrateo SHAC/cuenca, nuevo p
   balanceadas + políticas con apagado), re-simula cada policy y escribe **`run_XXXX.csv`**
   (valor de uso por año) + master **`../WEAP_2_ZARR/data/RunIDs_Q_dps_proposals.csv`**
   (IDs 2000+), para correrlas en WEAP con `run_rerun_one.py` / `run_rerun_batch.py`.
-  `prorrateo_cuenca → prorrateo_shac`; respeta prendido/apagado; agrega variantes con
-  sequía prolongada. Ejemplo:
+  Respeta prendido/apagado; agrega variantes con sequía prolongada. Ejemplo:
   ```powershell
   $env:DPS_CKPT = "..\WEAP_HydroMLP_RecursiveGW\runs\iter07_v3_clean\best_model-epoch=011-val_loss=0.0638.ckpt"
   & "venv_DPS\Scripts\python.exe" robust_pareto_to_rerun.py --pareto runs_weap\robust\pareto_v3_seed42.dat

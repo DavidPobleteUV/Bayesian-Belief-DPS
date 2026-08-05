@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 
 from weap_dps.config_weap import (
-    ACTION_NAMES_BINARY, ACTION_NAMES_QUANTITY, CANONICAL_Q,
+    ACTION_NAMES_BINARY, ACTION_NAMES_QUANTITY, CANONICAL_Q, ACTION_NAMES_INFRA,
 )
 
 # q canónico indexado por la binaria correspondiente (mismo orden).
@@ -56,6 +56,36 @@ def policy_output_to_actions(pi_out: np.ndarray,
             actions["q_desalacion_costera"]   = 0.0
 
     return actions
+
+
+def init_built_state() -> dict[str, float]:
+    """Estado 'ya construido' al inicio de un rollout (nada construido).
+
+    Debe llamarse UNA VEZ POR ROLLOUT (por política × escenario): si se reutiliza
+    entre escenarios, la infraestructura del escenario anterior se filtraría.
+    """
+    return {name: 0.0 for name in ACTION_NAMES_INFRA}
+
+
+def update_built_state(built: dict[str, float],
+                       actions: dict[str, float]) -> dict[str, float]:
+    """built_k = max(built_k, act_k) — monótono, nunca decrece.
+
+    Semántica (ver §2.4 de la metodología):
+      * act_k  = "operar la acción k este año"   → puede ir 1→0→1 libremente.
+      * built_k= "la obra k ya fue construida"   → irreversible.
+    El CAPEX se cobra una sola vez, en la PRIMERA activación (lo resuelve
+    cost_calculator._detect_first_activation_year), de modo que apagar y volver
+    a prender NO re-cobra la inversión; solo se ahorra/paga el OPEX del año.
+    """
+    for name in ACTION_NAMES_INFRA:
+        built[name] = max(built.get(name, 0.0), float(actions.get(name, 0.0)))
+    return built
+
+
+def built_state_features(built: dict[str, float]) -> list[float]:
+    """Vector de flags built_* en el orden canónico de ACTION_NAMES_INFRA."""
+    return [float(built.get(name, 0.0)) for name in ACTION_NAMES_INFRA]
 
 
 def actions_to_policy_output(actions: dict[str, float]) -> np.ndarray:

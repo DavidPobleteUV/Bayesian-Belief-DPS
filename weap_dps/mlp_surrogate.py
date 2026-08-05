@@ -34,7 +34,7 @@ GW_TYPES = {"GW", "GW_flux", "AP_wells", "Ag_wells"}
 
 from weap_dps.config_weap import (
     CKPT_PATH, SCALERS_PATH, TRANSFORM_PARAMS_PATH, MANIFEST_PATH,
-    WARMUP_WEEKS, WEEKS_PER_YEAR,
+    WARMUP_WEEKS, WEEKS_PER_YEAR, ZARR_TEMPLATE_PATH,
 )
 from rdm_mlp.models.lightning_module import WEAPHydroMLPLightning
 
@@ -131,15 +131,38 @@ class MLPSurrogate:
         Además rellena self.gw_idx_filt, self.surface_idx_filt,
         self.y_mean_gw, self.y_std_gw, self.y_mean_surf, self.y_std_surf.
         """
+        # Fuente preferida: los índices que dejó `extract_data.py` en el
+        # template, calculados con la MISMA build_indices que usa el DataModule.
+        # Re-derivarlos del orden de filas del manifest NO sirve: ese espacio
+        # (filas role=target) no coincide con las columnas de Y_filtered
+        # (685 vs 677) y produce IndexError al indexar los scalers.
+        gw_idx_filt = surf_idx_filt = None
+        gw_names = surf_names = None
+        try:
+            tpl = np.load(ZARR_TEMPLATE_PATH, allow_pickle=True)
+            if "gw_idx_filt" in tpl and "surface_idx_filt" in tpl:
+                gw_idx_filt = np.asarray(tpl["gw_idx_filt"], dtype=int)
+                surf_idx_filt = np.asarray(tpl["surface_idx_filt"], dtype=int)
+                if "target_names_filtered" in tpl:
+                    tn = list(tpl["target_names_filtered"])
+                    gw_names = [tn[i] for i in gw_idx_filt]
+                    surf_names = [tn[i] for i in surf_idx_filt]
+                logger.info("Índices GW/Surface tomados del template "
+                            "(n_gw=%d, n_surface=%d)", len(gw_idx_filt), len(surf_idx_filt))
+        except Exception as exc:      # noqa: BLE001
+            logger.warning("No se pudieron leer los índices del template (%s)", exc)
+
         df = pd.read_csv(manifest_path)
         targets = df[df["role"] == "target"].reset_index(drop=True)
-        gw_mask = targets["Type"].isin(GW_TYPES).to_numpy()
-        # Posiciones en el Y_filtered (0..n_targets_filt - 1)
-        gw_idx_filt   = np.where(gw_mask)[0]
-        surf_idx_filt = np.where(~gw_mask)[0]
-
-        gw_names   = targets.loc[gw_mask,  "column"].tolist()
-        surf_names = targets.loc[~gw_mask, "column"].tolist()
+        if gw_idx_filt is None:       # fallback legacy (layout antiguo)
+            gw_mask = targets["Type"].isin(GW_TYPES).to_numpy()
+            gw_idx_filt   = np.where(gw_mask)[0]
+            surf_idx_filt = np.where(~gw_mask)[0]
+            gw_names   = targets.loc[gw_mask,  "column"].tolist()
+            surf_names = targets.loc[~gw_mask, "column"].tolist()
+        if gw_names is None:
+            gw_names   = [f"gw_{i}"   for i in gw_idx_filt]
+            surf_names = [f"surf_{i}" for i in surf_idx_filt]
 
         # Scalers indexados por filt_idx
         if self.y_mean is not None and self.y_std is not None:

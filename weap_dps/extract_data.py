@@ -68,12 +68,20 @@ def _resolve_best_ckpt(explicit: str | None = None) -> Path:
 
 
 # SRC se construye en main() porque el ckpt se resuelve dinámicamente
-def _build_src(ckpt_src: Path) -> dict:
+def _build_src(ckpt_src: Path, data_dir: Path | None = None) -> dict:
+    """Fuentes a copiar al DPS.
+
+    `data_dir` = carpeta del modelo donde viven scalers/transform/manifest
+    FILTRADO. Debe ser la MISMA con la que se entrenó el checkpoint: mezclar un
+    ckpt nuevo con scalers viejos desnormaliza mal y en silencio.
+    Por defecto MODEL_REPO/data (layout antiguo).
+    """
+    d = data_dir or (MODEL_REPO / "data")
     return {
         CKPT_PATH:             ckpt_src,
-        MANIFEST_PATH:         MODEL_REPO / "data" / "variables_mlp_weekly_filtered.csv",
-        SCALERS_PATH:          MODEL_REPO / "data" / "scalers_weap.npz",
-        TRANSFORM_PARAMS_PATH: MODEL_REPO / "data" / "transform_params_weap.npz",
+        MANIFEST_PATH:         d / "variables_mlp_weekly_filtered.csv",
+        SCALERS_PATH:          d / "scalers_weap.npz",
+        TRANSFORM_PARAMS_PATH: d / "transform_params_weap.npz",
     }
 
 
@@ -90,14 +98,22 @@ def copy_if_newer(src: Path, dst: Path) -> bool:
     return True
 
 
-def build_X_template(baseline_run_id: int = 0) -> None:
+def build_X_template(baseline_run_id: int = 0,
+                     zarr_path: Path | None = None,
+                     manifest_path: Path | None = None) -> None:
     """
     Extrae el X_filtered del run `baseline_run_id` del zarr del modelo
     y lo guarda como template (.npz). El template servirá de "esqueleto"
     para construir inputs sintéticos en el bridge: ya viene con los lags
     GW iniciales y las columnas climáticas/áreas/población del run base.
+
+    IMPORTANTE: el DataModule sub-selecciona las columnas de X_filtered por el
+    manifest (x_idx) antes de entrenar, así que el modelo espera len(x_idx)
+    columnas, NO todas las de X_filtered. Si el template se guarda sin ese
+    sub-set, mlp_surrogate falla con "X shape mismatch". Por eso aquí se aplica
+    el mismo filtro (pasando --manifest).
     """
-    zarr_path = MODEL_REPO / "data" / "weap_weekly.zarr"
+    zarr_path = zarr_path or (MODEL_REPO / "data" / "weap_weekly.zarr")
     if not zarr_path.exists():
         logger.warning("Zarr no encontrado en %s — saltando template.", zarr_path)
         return
@@ -113,10 +129,47 @@ def build_X_template(baseline_run_id: int = 0) -> None:
         logger.error("run_id=%d no está en el zarr.", baseline_run_id)
         return
     slot = int(idx[0])
-    X = z["X_filtered"][slot]               # (1872, 611)
+    X = z["X_filtered"][slot]               # (T, n_cols_filtered)
     mask = z["mask"][slot] if "mask" in z else None
     feature_names = list(z.attrs.get("feature_names_filtered",
                                       z.attrs.get("feature_names", [])))
+
+    # ── sub-set por manifest (igual que el DataModule) ──
+    # Además se guardan los índices de salida (gw/surface) EN EL ESPACIO DE
+    # Y_filtered, calculados con la MISMA función que usa el DataModule. Sin
+    # esto el DPS los re-derivaba del orden de filas del manifest, que es un
+    # espacio distinto (685 filas vs 677 columnas de Y_filtered) → IndexError.
+    target_names = list(z.attrs.get("target_names_filtered",
+                                    z.attrs.get("target_names", [])))
+    extra = {}
+    if manifest_path and Path(manifest_path).exists():
+        import sys as _sys
+        _sys.path.insert(0, str(MODEL_REPO / "src"))
+        try:
+            from rdm_mlp.utils.manifest import load_manifest, build_indices
+            x_idx, y_idx, ar_idx = build_indices(feature_names, target_names,
+                                                 load_manifest(str(manifest_path)))
+            if x_idx is not None and len(x_idx) != X.shape[1]:
+                logger.info("Sub-seleccionando X por manifest: %d → %d columnas",
+                            X.shape[1], len(x_idx))
+                sel = np.asarray(x_idx, dtype=int)
+                X = X[:, sel]
+                feature_names = [feature_names[i] for i in sel]
+
+            gw_idx = np.asarray(ar_idx, dtype=int)
+            y_all = y_idx if y_idx is not None else range(len(target_names))
+            surf_idx = np.array([i for i in y_all if i not in set(gw_idx.tolist())],
+                                dtype=int)
+            extra = dict(
+                gw_idx_filt=gw_idx,
+                surface_idx_filt=surf_idx,
+                target_names_filtered=np.array(target_names, dtype=object),
+            )
+            logger.info("Índices de salida: n_gw=%d  n_surface=%d  (espacio Y_filtered=%d)",
+                        len(gw_idx), len(surf_idx), len(target_names))
+        except Exception as exc:      # noqa: BLE001
+            logger.warning("No se pudo aplicar el sub-set del manifest (%s). "
+                           "El template puede no calzar con el modelo.", exc)
 
     ZARR_TEMPLATE_PATH.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -125,6 +178,7 @@ def build_X_template(baseline_run_id: int = 0) -> None:
         mask=mask if mask is not None else np.ones(X.shape[0], dtype=bool),
         feature_names=np.array(feature_names, dtype=object),
         baseline_run_id=baseline_run_id,
+        **extra,
     )
     logger.info("Template guardado: %s  shape=%s", ZARR_TEMPLATE_PATH, X.shape)
 
@@ -136,7 +190,20 @@ def main():
                          "Por defecto usa el mejor de runs/iter01 (menor val_loss).")
     ap.add_argument("--baseline_run_id", type=int, default=0,
                     help="run_id base para el X template.")
+    ap.add_argument("--zarr", default=None,
+                    help="Zarr del modelo (rel. a MODEL_REPO o absoluto). "
+                         "Ej: data/_v3_900/weap_weekly_merged.zarr")
+    ap.add_argument("--manifest", default=None,
+                    help="Manifest FILTRADO del modelo, para sub-seleccionar X "
+                         "igual que el DataModule (evita 'X shape mismatch'). "
+                         "Ej: data/_v3_900/variables_mlp_weekly_filtered.csv")
     args = ap.parse_args()
+
+    def _resolve(p):
+        if not p:
+            return None
+        q = Path(p)
+        return q if q.is_absolute() else (MODEL_REPO / q)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     logger.info("Repo modelo: %s", MODEL_REPO)
@@ -144,7 +211,12 @@ def main():
 
     ckpt_src = _resolve_best_ckpt(args.checkpoint)
     logger.info("Checkpoint fuente: %s", ckpt_src)
-    SRC = _build_src(ckpt_src)
+    # scalers/transform/manifest deben salir de la MISMA carpeta con la que se
+    # entrenó el ckpt. Si se pasó --manifest, se usa su carpeta.
+    data_dir = _resolve(args.manifest).parent if args.manifest else None
+    if data_dir:
+        logger.info("Carpeta de artefactos del modelo: %s", data_dir)
+    SRC = _build_src(ckpt_src, data_dir)
 
     n_copied = 0
     for dst, src in SRC.items():
@@ -152,7 +224,9 @@ def main():
             n_copied += 1
 
     logger.info("Archivos copiados: %d/%d", n_copied, len(SRC))
-    build_X_template(baseline_run_id=args.baseline_run_id)
+    build_X_template(baseline_run_id=args.baseline_run_id,
+                     zarr_path=_resolve(args.zarr),
+                     manifest_path=_resolve(args.manifest))
     logger.info("Done.")
 
 
