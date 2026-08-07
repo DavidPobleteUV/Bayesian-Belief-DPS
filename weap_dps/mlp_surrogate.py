@@ -103,6 +103,8 @@ class MLPSurrogate:
             self.transform_methods_x_filt = None
 
         # Target names — split en GW (524) y Surface (142) según Type.
+        # (subset_x_scalers() se llama después, desde PipeWEAP, cuando el
+        #  template revela que el modelo consume menos columnas que X_filtered)
         # Además, separa el array de transform_methods en GW vs Surface
         # con el mismo orden que el modelo entrega gw_pred/surf_pred.
         (self.target_names_gw, self.target_names_surf,
@@ -192,6 +194,35 @@ class MLPSurrogate:
                                 nm, len(names), n_exp)
 
         return gw_names, surf_names, gw_methods, surf_methods
+
+    # ─────────────────────────────────────────────────────────────────
+    # Alineación de escaladores con el espacio de columnas del modelo
+    # ─────────────────────────────────────────────────────────────────
+    def subset_x_scalers(self, x_idx) -> None:
+        """Recorta x_mean/x_std/transform_methods_x al espacio que consume el modelo.
+
+        Los escaladores se guardan en el espacio de X_filtered (527 columnas),
+        pero el modelo consume el sub-conjunto que activa el manifest (519). El
+        template ya viene recortado, así que `normalize_x_value(v, 36)` mezclaba
+        dos espacios: la columna 36 del template contra el escalador 36 de
+        X_filtered. Las 8 columnas de acción caían en escaladores ajenos y la
+        acción se inyectaba con z-scores de hasta -19 σ — fuera de todo lo que
+        el modelo vio, y sin llegar nunca a su columna real.
+        """
+        idx = np.asarray(x_idx, dtype=int)
+        if self.x_mean is None or len(self.x_mean) == len(idx):
+            return                                    # ya alineados
+        if idx.max() >= len(self.x_mean):
+            raise ValueError(
+                f"x_idx apunta a la columna {idx.max()} pero los escaladores "
+                f"tienen {len(self.x_mean)}. Template y scalers no son del mismo modelo.")
+        n_before = len(self.x_mean)
+        self.x_mean = self.x_mean[idx]
+        self.x_std = self.x_std[idx]
+        if self.transform_methods_x_filt is not None:
+            self.transform_methods_x_filt = self.transform_methods_x_filt[idx]
+        logger.info("Escaladores de X alineados al modelo: %d → %d columnas",
+                    n_before, len(self.x_mean))
 
     # ─────────────────────────────────────────────────────────────────
     # Normalización de inputs (para inyectar acciones/q en X_tensor)

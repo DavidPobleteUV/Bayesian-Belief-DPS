@@ -70,6 +70,20 @@ class PipeWEAP:
         self.feature_names = list(data["feature_names"])
         self.scenarios = scenarios if scenarios is not None else [self.X_template]
 
+        # Los escaladores vienen en el espacio de X_filtered; el template ya
+        # está recortado al sub-conjunto del manifest. Si no se alinean, cada
+        # acción se normaliza con el escalador de otra columna.
+        n_cols = self.X_template.shape[1]
+        if self.surrogate.x_mean is not None and len(self.surrogate.x_mean) != n_cols:
+            x_idx = data.get("x_idx_filt")
+            if x_idx is None:
+                raise RuntimeError(
+                    f"El template tiene {n_cols} columnas y los escaladores "
+                    f"{len(self.surrogate.x_mean)}, pero el template no trae "
+                    f"'x_idx_filt' para alinearlos. Regenera el template con "
+                    f"`python weap_dps/extract_data.py` (necesita el zarr completo).")
+            self.surrogate.subset_x_scalers(x_idx)
+
         # Lookup de columnas de acción
         self.action_col_idx = build_action_col_idx(self.feature_names)
 

@@ -155,16 +155,20 @@ def build_X_template(baseline_run_id: int = 0,
                 sel = np.asarray(x_idx, dtype=int)
                 X = X[:, sel]
                 feature_names = [feature_names[i] for i in sel]
+                # Guardar el mapeo 519→X_filtered: los escaladores viven en el
+                # espacio de X_filtered y hay que recortarlos igual, o al
+                # normalizar una acción se usa el escalador de otra columna.
+                extra["x_idx_filt"] = sel
 
             gw_idx = np.asarray(ar_idx, dtype=int)
             y_all = y_idx if y_idx is not None else range(len(target_names))
             surf_idx = np.array([i for i in y_all if i not in set(gw_idx.tolist())],
                                 dtype=int)
-            extra = dict(
+            extra.update(dict(          # update, no reasignar: conserva x_idx_filt
                 gw_idx_filt=gw_idx,
                 surface_idx_filt=surf_idx,
                 target_names_filtered=np.array(target_names, dtype=object),
-            )
+            ))
             logger.info("Índices de salida: n_gw=%d  n_surface=%d  (espacio Y_filtered=%d)",
                         len(gw_idx), len(surf_idx), len(target_names))
         except Exception as exc:      # noqa: BLE001
