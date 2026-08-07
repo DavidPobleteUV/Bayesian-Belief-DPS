@@ -53,6 +53,20 @@ def _resolve_train_zarr() -> Path:
         p = MODEL_REPO / rel
         if p.exists():
             return p
+    # Nada encontrado: se devuelve el path histórico igual, pero avisando. Sin
+    # esto el fallo aparece más tarde como un traceback de zarr al abrir un
+    # directorio inexistente, que no dice qué falta ni cómo arreglarlo.
+    import warnings
+    warnings.warn(
+        f"No se encontró ningún zarr de entrenamiento.\n"
+        f"  Buscado:\n"
+        f"    1) $DPS_TRAIN_ZARR (no seteado)\n"
+        f"    2) {local}\n"
+        f"    3) {MODEL_REPO}/data/...\n"
+        f"  Para correr el DPS basta el subconjunto (~16 MB): cópialo desde la PC\n"
+        f"  donde se entrenó el modelo a  data_weap/train_subset.zarr\n"
+        f"  (se genera con: python weap_dps/build_train_subset.py)",
+        RuntimeWarning, stacklevel=2)
     return MODEL_REPO / "data" / "weap_weekly.zarr"             # fallback histórico
 
 
