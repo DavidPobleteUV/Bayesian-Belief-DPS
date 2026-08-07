@@ -56,11 +56,33 @@ $env:OMP_NUM_THREADS = "1"      # 1 core por proceso; si no, se pisan entre si
 $env:MKL_NUM_THREADS = "1"
 $env:KMP_DUPLICATE_LIB_OK = "TRUE"
 $env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUNBUFFERED = "1"     # sin esto Python bufferea al redirigir a archivo
+                                # y los logs (y check_progress) van muy atrasados
 $env:DPS_WATERFALL = "0"        # cascada determinista OFF (probada: empeora J4)
 
 $nScen = $NClimate * 3
 $eta   = [math]::Round($Evaluations * 1.18 * $nScen / 3600, 1)
 $seedList = $Seeds -join ", "
+
+# --- Aviso de RAM: cada proceso carga el modelo + los N escenarios en memoria.
+# Con muchas semillas en paralelo se puede agotar la RAM y los procesos mueren
+# sin dejar traza clara (el .err a veces queda vacio si el SO los mata).
+$ramGB = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB
+# ESTIMACION (no medida): ~0.9 GB de base por proceso (torch + modelo) + ~5 MB
+# por escenario. Si los procesos mueren sin dejar nada en el .err, sospechar de
+# RAM: el SO los mata sin traza. Si el .err tiene un traceback, es otra cosa.
+$perProc  = 0.9 + 0.005 * $nScen
+$needGB   = [math]::Round($Seeds.Count * $perProc, 1)
+$maxSeeds = [math]::Max(1, [math]::Floor(($ramGB - 2.0) / $perProc))   # 2 GB para el SO
+if ($Seeds.Count -gt $maxSeeds) {
+    Write-Warning ("RAM insuficiente: {0} semillas x ~{1} GB = ~{2} GB, y el equipo tiene {3:N1} GB." -f `
+                   $Seeds.Count, [math]::Round($perProc, 2), $needGB, $ramGB)
+    Write-Warning ("Con esta RAM caben ~{0} semillas. Los procesos de mas moriran sin error claro." -f $maxSeeds)
+    Write-Warning ("Alternativas: -Seeds con {0} valores, o -NClimate 3 (9 escenarios, menos memoria)." -f $maxSeeds)
+    Write-Host ""
+    $r = Read-Host "Continuar igual? (s/N)"
+    if ($r -notmatch '^[sSyY]') { Write-Host "Cancelado."; return }
+}
 
 Write-Host ""
 Write-Host "Robust DPS - modelo iter1_clean_h128"
