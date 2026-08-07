@@ -69,6 +69,19 @@ def _scale_demand(base_series: np.ndarray, rate: float) -> np.ndarray:
 def pick_climate_runs(n_climate: int = 5) -> list[int]:
     """N run_ids spread dry→wet por precipitación total (filtrando P=0)."""
     Z = zarr.open_group(str(TRAIN_ZARR_PATH), mode="r")
+
+    # Si el zarr es un SUBCONJUNTO (build_train_subset.py), los climas ya vienen
+    # pre-seleccionados sobre el dataset COMPLETO y guardados en attrs. Hay que
+    # usar esa lista: re-elegir aquí daría un ensamble distinto, porque el
+    # subset solo tiene unos pocos runs (y el baseline se colaría como "clima").
+    sub = Z.attrs.get("subset_climate_runs")
+    if sub:
+        sub = [int(x) for x in sub]                      # ya ordenados seco→húmedo
+        if n_climate >= len(sub):
+            return sub
+        idx = np.linspace(0, len(sub) - 1, n_climate).astype(int)
+        return [sub[i] for i in idx]
+
     feat = list(Z.attrs["feature_names"]); rids = np.array(Z["run_ids"][:]).astype(int)
     pcols = [feat.index(f"Precipitation__{s}") for s in SUBCUENCAS if f"Precipitation__{s}" in feat]
     val = np.where(rids >= 0)[0]

@@ -35,3 +35,6 @@ Thumbs.db
 # Checkpoints de modelo (pesados, no versionar)
 data_weap/*.ckpt
 *.ckpt
+
+# Subconjunto del zarr de entrenamiento (se genera con build_train_subset.py)
+data_weap/train_subset.zarr/

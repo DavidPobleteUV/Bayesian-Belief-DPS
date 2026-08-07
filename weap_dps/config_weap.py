@@ -40,6 +40,13 @@ MODEL_REPO = PROJECT_ROOT.parent / "WEAP_HydroMLP_RecursiveGW"
 def _resolve_train_zarr() -> Path:
     if os.environ.get("DPS_TRAIN_ZARR"):
         return Path(os.environ["DPS_TRAIN_ZARR"])
+    # 1) subconjunto local (~30 MB): baseline + runs climáticos. Viaja con los
+    #    artefactos del modelo, así el DPS corre SIN el repo del MLP ni el zarr
+    #    completo de ~6 GB. Lo genera weap_dps/build_train_subset.py.
+    local = DATA_DIR / "train_subset.zarr"
+    if local.exists():
+        return local
+    # 2) dataset completo, si está disponible en el repo del modelo
     for rel in ("data/_v3_900_clean/weap_weekly_merged.zarr",   # iter1 (900 runs, limpio)
                 "data/_v3_900/weap_weekly_merged.zarr",         # iter0 (900 runs)
                 "data/weap_weekly.zarr"):                       # layout antiguo (773)
