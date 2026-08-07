@@ -48,6 +48,20 @@ foreach ($f in $need) {
     }
 }
 
+# Dependencias: un import que falla mata el proceso a los 2 s y deja el .err
+# como unica traza. Mejor descubrirlo aqui, en una sola linea, que en N logs.
+$mods = "numpy,torch,pytorch_lightning,zarr,pandas,platypus,rdm_mlp"
+$chk = & $py -c @"
+import importlib, sys
+falta = [m for m in '$mods'.split(',') if importlib.util.find_spec(m) is None]
+print(','.join(falta))
+"@
+if ($LASTEXITCODE -ne 0) { throw "No se pudo ejecutar '$py'. Revisa el interprete." }
+if ($chk.Trim()) {
+    throw ("Faltan modulos: {0}`nInstala con:  pip install {1}" -f `
+           $chk.Trim(), ($chk.Trim() -replace ',', ' ' -replace 'pytorch_lightning', 'pytorch-lightning'))
+}
+
 # NO setear DPS_J4_CAL: forzaria un factor ESCALAR y anularia la calibracion
 # condicional al numero de acciones (config_weap.j4_calibration_factor).
 Remove-Item Env:\DPS_J4_CAL     -ErrorAction SilentlyContinue
