@@ -19,7 +19,7 @@ import numpy as np
 import zarr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from weap_dps.config_weap import MODEL_REPO, WEEKS_PER_YEAR
+from weap_dps.config_weap import MODEL_REPO, WEEKS_PER_YEAR, TRAIN_ZARR_PATH
 from weap_dps.climate_sampler import SUBCUENCAS
 from weap_dps.demand_builder import POP_COLUMNS, AREA_COLUMNS, DEMAND_AP_COLUMNS
 
@@ -68,7 +68,7 @@ def _scale_demand(base_series: np.ndarray, rate: float) -> np.ndarray:
 
 def pick_climate_runs(n_climate: int = 5) -> list[int]:
     """N run_ids spread dry→wet por precipitación total (filtrando P=0)."""
-    Z = zarr.open_group(str(Path(MODEL_REPO) / "data" / "weap_weekly.zarr"), mode="r")
+    Z = zarr.open_group(str(TRAIN_ZARR_PATH), mode="r")
     feat = list(Z.attrs["feature_names"]); rids = np.array(Z["run_ids"][:]).astype(int)
     pcols = [feat.index(f"Precipitation__{s}") for s in SUBCUENCAS if f"Precipitation__{s}" in feat]
     val = np.where(rids >= 0)[0]
@@ -88,7 +88,7 @@ def build_scenarios(surrogate, feature_names: list[str], template: np.ndarray,
                     n_climate: int = 5, corners: dict | None = None) -> tuple[list, list]:
     corners = corners or DEMAND_CORNERS
     fi = {n: i for i, n in enumerate(feature_names)}
-    Z = zarr.open_group(str(Path(MODEL_REPO) / "data" / "weap_weekly.zarr"), mode="r")
+    Z = zarr.open_group(str(TRAIN_ZARR_PATH), mode="r")
     zfeat = list(Z.attrs["feature_names"]); zfi = {n: i for i, n in enumerate(zfeat)}
     zr = np.array(Z["run_ids"][:]).astype(int)
     base_raw = Z["X"][int(np.where(zr == 0)[0][0])]            # run-0 raw (demanda/área/pob base)

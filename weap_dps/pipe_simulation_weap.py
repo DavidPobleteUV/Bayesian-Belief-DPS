@@ -46,10 +46,21 @@ class PipeWEAP:
     def __init__(self,
                  template_path: Path,
                  scenarios: list[np.ndarray] | None = None,
-                 policy_arch: tuple[int, int] = (14, 5)):   # K=5: 5 acciones binarias
+                 policy_arch: tuple[int, int] | None = None):
         # Cargar surrogate
         self.surrogate = MLPSurrogate()
+        # K se deriva del catálogo de acciones vigente: si se fija a mano y no
+        # coincide, las salidas sobrantes de la política quedan MUERTAS
+        # (action_translator solo lee las primeras len(ACTION_NAMES_BINARY)) y
+        # NSGA-II gasta presupuesto optimizando variables que no hacen nada.
+        if policy_arch is None:
+            policy_arch = (14, len(ACTION_NAMES_BINARY))
         self.policy_M, self.policy_K = policy_arch   # hidden, output dim
+        if self.policy_K != len(ACTION_NAMES_BINARY):
+            logger.warning("policy_K=%d != %d acciones del catálogo: %d salidas "
+                           "de la política quedarán sin uso",
+                           self.policy_K, len(ACTION_NAMES_BINARY),
+                           self.policy_K - len(ACTION_NAMES_BINARY))
 
         # Cargar template
         data = np.load(template_path, allow_pickle=True)

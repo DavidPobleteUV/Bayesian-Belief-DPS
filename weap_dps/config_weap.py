@@ -28,10 +28,28 @@ SCALERS_PATH  = DATA_DIR / "scalers_weap.npz"
 TRANSFORM_PARAMS_PATH = DATA_DIR / "transform_params_weap.npz"
 CLIMATE_DIR   = DATA_DIR / "climate_base"
 ZARR_TEMPLATE_PATH = DATA_DIR / "X_template.npz"   # 1 run baseline para reusar
+
 RESULTS_DIR  = PROJECT_ROOT / "runs_weap"
 
 # Repo del modelo (para `extract_data.py`)
 MODEL_REPO = PROJECT_ROOT.parent / "WEAP_HydroMLP_RecursiveGW"
+
+# Zarr de entrenamiento del MODELO (lo usa scenario_builder para armar el
+# ensamble climático: necesita los runs crudos, no solo el template).
+# Se resuelve por orden de preferencia; override con DPS_TRAIN_ZARR.
+def _resolve_train_zarr() -> Path:
+    if os.environ.get("DPS_TRAIN_ZARR"):
+        return Path(os.environ["DPS_TRAIN_ZARR"])
+    for rel in ("data/_v3_900_clean/weap_weekly_merged.zarr",   # iter1 (900 runs, limpio)
+                "data/_v3_900/weap_weekly_merged.zarr",         # iter0 (900 runs)
+                "data/weap_weekly.zarr"):                       # layout antiguo (773)
+        p = MODEL_REPO / rel
+        if p.exists():
+            return p
+    return MODEL_REPO / "data" / "weap_weekly.zarr"             # fallback histórico
+
+
+TRAIN_ZARR_PATH = _resolve_train_zarr()
 
 # ─── Horizonte temporal ────────────────────────────────────────────────────
 # MLP iter0_900 (900 runs): 2392 weeks (2014-04-02 → 2060-03, calendario WEAP).
