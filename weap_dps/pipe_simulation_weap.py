@@ -18,7 +18,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from weap_dps.config_weap import (
     SPIN_UP_YEARS, DECISION_YEARS, WARMUP_WEEKS, WEEKS_PER_YEAR,
-    N_WEEKS_HORIZON, J4_COST_CALIBRATION, DPS_WATERFALL,
+    N_WEEKS_HORIZON, j4_calibration_factor, DPS_WATERFALL,
 )
 from weap_dps.mlp_surrogate import MLPSurrogate
 from weap_dps.action_translator import (
@@ -156,14 +156,25 @@ class PipeWEAP:
         # NSGA minimiza → convertir J1 (maximizar storage) y J3 (maximizar valor) a min.
         # J6 (índice 5) REINCORPORADO: se deriva del Z_value predicho (ver
         # cost_calculator.j6_coastal_salinity). Ya se minimiza tal cual.
-        # J4 se calibra ×J4_COST_CALIBRATION: el surrogate sub-predice el costo ~18%
-        # (sub-cuenta volumen camión/desal). Es un factor constante → NO altera el
-        # orden de Pareto, solo la fidelidad del valor absoluto reportado.
+        # J4 se calibra: el surrogate SUB-PREDICE el volumen de respaldo, y el
+        # sesgo crece con el número de acciones activas (1.17 con 0 acciones →
+        # 2.07 con 3+). Un escalar único favorecería sistemáticamente a las
+        # políticas con muchas acciones (las caras), así que el factor se elige
+        # según cuántas acciones enciende ESTA política.
+        n_act = 0
+        ah = result.get("actions_history")
+        if ah is not None and len(ah):
+            ah = np.asarray(ah)
+            n_bin = len(ACTION_NAMES_BINARY)
+            # una acción cuenta como activa si se enciende en algún año
+            n_act = int((ah[:, :n_bin] > 0.5).any(axis=0).sum())
+        cal = j4_calibration_factor(n_act)
+
         J = [
             -J_mean[0],                           # J1 GW storage (max → neg)
              J_mean[1],                           # J2 unmet AP
             -J_mean[2],                           # J3 agri value (max → neg)
-             J_mean[3] * J4_COST_CALIBRATION,     # J4 cost (calibrado)
+             J_mean[3] * cal,                     # J4 cost (calibrado por nº acciones)
              J_mean[4],                           # J5 weeks failure
              J_mean[5],                           # J6 salinidad costera (min)
         ]

@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from platypus import NSGAII
 from weap_dps.config_weap import (
     OPTIMIZER_CONFIG, RESULTS_DIR, ZARR_TEMPLATE_PATH,
-    SPIN_UP_YEARS, DECISION_YEARS, WARMUP_WEEKS, WEEKS_PER_YEAR, J4_COST_CALIBRATION,
+    SPIN_UP_YEARS, DECISION_YEARS, WARMUP_WEEKS, WEEKS_PER_YEAR, j4_calibration_factor,
 )
 from weap_dps.pipe_simulation_weap import PipeWEAP
 from weap_dps.pipe_problem_weap import PipeProblemWEAP
@@ -59,9 +59,18 @@ class RobustPipeWEAP(PipeWEAP):
                 decision_start_week=WARMUP_WEEKS + SPIN_UP_YEARS * WEEKS_PER_YEAR,
             )
             all_J.append(list(objs.values()))
-        A = np.array(all_J, float)                          # (n_scen, 5) ya en convención WEAP
+        A = np.array(all_J, float)                          # (n_scen, 6) convención WEAP
+        # J4: factor según cuántas acciones enciende ESTA política (el sesgo del
+        # surrogate crece con el nº de acciones; ver config_weap.j4_calibration_factor).
+        n_act = 0
+        ah = result.get("actions_history")
+        if ah is not None and len(ah):
+            ah = np.asarray(ah)
+            n_act = int((ah[:, :len(ACTION_NAMES_BINARY)] > 0.5).any(axis=0).sum())
+        cal = j4_calibration_factor(n_act)
         # pasar a convención NSGA (J1,J3 a min) ANTES de mean/std, luego robustez
-        M = np.column_stack([-A[:, 0], A[:, 1], -A[:, 2], A[:, 3] * J4_COST_CALIBRATION, A[:, 4]])
+        M = np.column_stack([-A[:, 0], A[:, 1], -A[:, 2], A[:, 3] * cal,
+                             A[:, 4], A[:, 5]])             # J6 salinidad costera
         robust = M.mean(0) + self.lam * M.std(0)            # mean + λ·std por objetivo
         return tuple(robust.tolist())
 

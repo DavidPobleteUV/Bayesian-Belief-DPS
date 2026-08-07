@@ -178,13 +178,45 @@ ACTION_INFRA_PARAMS = {
 # ─── Umbrales / criterios de objetivos ─────────────────────────────────────
 J5_FAILURE_THRESHOLD_FRAC = 0.10   # semana en falla si Unmet/Demand > 10%
 
-# Calibración de J4 (costo): factor = E[costo_obs]/E[costo_pred] (agregado, 118
-# test runs). Re-derivado por variante para los modelos limpios via
-# calibrate_j4_waterfall.py (el viejo 1.22 era del modelo antiguo). El costo es
-# ~95% camiones. NO altera el orden de Pareto (factor constante), solo el valor
-# absoluto reportado. Sobreescribible por entorno DPS_J4_CAL (lo setea el runner
-# por variante):  v2=1.149  v3=1.032  v2.3=1.189  v3.3=1.184.
-J4_COST_CALIBRATION = float(os.environ.get("DPS_J4_CAL", "1.22"))
+# ─── Calibración de J4 (costo) ─────────────────────────────────────────────
+# factor = E[costo_obs] / E[costo_pred] sobre las fuentes de RESPALDO (aducción,
+# pozo costero, desal, acuerdo, camiones). Los pozos propios se excluyen: su
+# costo es eléctrico y se cancela en el cociente.
+#
+# El surrogate SUBESTIMA el volumen de respaldo, y el sesgo NO es constante:
+# crece con el número de acciones activas (medido en los 113 runs de test del
+# modelo iter1_clean_h128):
+#
+#     acciones activas   n     factor
+#            0          14      1.168
+#            1          56      1.429
+#            2          23      1.535
+#           3+          20      2.067
+#
+# Por eso un ESCALAR único no es neutral al ranking: corregiría bien las
+# políticas sin acciones y dejaría subestimadas las de muchas acciones (las
+# caras), sesgando al optimizador hacia políticas agresivas. La calibración
+# condicional quita ese sesgo diferencial (error mediano de J4: 32% sin
+# calibrar -> 20% con escalar -> 16% condicional).
+#
+# El ORDEN sí lo preserva bien el surrogate: Spearman(costo_obs, costo_pred)
+# = 0.92 sobre los 113 runs.
+J4_CAL_BY_NACTIONS = {0: 1.168, 1: 1.429, 2: 1.535, 3: 2.067}   # 3 = "3 o más"
+
+# Compat / override manual: si DPS_J4_CAL está seteado se usa ESE escalar para
+# todos los casos (ignora la tabla). Útil para reproducir corridas antiguas.
+J4_COST_CALIBRATION = float(os.environ["DPS_J4_CAL"]) if os.environ.get("DPS_J4_CAL") else None
+
+
+def j4_calibration_factor(n_actions: int) -> float:
+    """Factor de calibración de J4 según cuántas acciones están activas.
+
+    `n_actions` = número de acciones ON en la política (0..4). Se agrupa 3+
+    porque con 4 acciones hay pocos runs de test para estimar por separado.
+    """
+    if J4_COST_CALIBRATION is not None:      # override por entorno
+        return J4_COST_CALIBRATION
+    return J4_CAL_BY_NACTIONS[min(int(n_actions), 3)]
 
 # J6 (salinidad costera) ELIMINADO del problema multiobjetivo: sin zeta (interfaz
 # SWI2) la salinidad solo es discriminable de forma gruesa (régimen salino vs
