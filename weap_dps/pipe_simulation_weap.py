@@ -23,8 +23,10 @@ from weap_dps.config_weap import (
 from weap_dps.mlp_surrogate import MLPSurrogate
 from weap_dps.action_translator import (
     policy_output_to_actions, build_action_col_idx,
-    ACTION_NAMES_BINARY, ACTION_NAMES_QUANTITY,
+    init_built_state, update_built_state,
+    ACTION_NAMES_BINARY, ACTION_NAMES_QUANTITY, CANONICAL_Q,
 )
+from weap_dps.action_translator import _Q_BY_BINARY
 from weap_dps.cost_calculator import compute_objectives
 
 logger = logging.getLogger(__name__)
@@ -103,7 +105,20 @@ class PipeWEAP:
         W2 = P[N*M+M:N*M+M+M*K].reshape(M, K)
         b2 = P[N*M+M+M*K:]
 
+        # Estado de obras construidas. La política re-decide cada año SIN
+        # memoria, así que sin esto puede encender la desaladora en 2027 y
+        # apagarla en 2028: el CAPEX se cobra igual (se detecta la primera
+        # activación) pero la columna q vuelve a 0 y el surrogate deja de
+        # entregar agua. Resultado: se paga la planta y no se usa.
+        built = init_built_state()
+
         def policy_fn(state_dict: dict, year_idx: int) -> dict:
+            # El mismo policy_fn se reutiliza en los N escenarios del ensamble;
+            # cada rollout arranca en year_idx=0 y debe partir sin obras.
+            nonlocal built
+            if year_idx == 0:
+                built = init_built_state()
+
             s = np.array([state_dict["gw_storage_avg"],
                           state_dict["gw_storage_min"],
                           state_dict["gw_trend"],
@@ -111,7 +126,26 @@ class PipeWEAP:
             h = np.tanh(s @ W1 + b1)
             raw = h @ W2 + b2
             pi = 1.0 / (1.0 + np.exp(-raw))   # sigmoid → [0,1]
-            return policy_output_to_actions(pi)
+            actions = policy_output_to_actions(pi)
+
+            # Irreversibilidad: una obra construida sigue operando aunque la
+            # política la "apague". Solo aplica a ACTION_NAMES_INFRA; el
+            # acuerdo es administrativo y sí puede revertirse año a año.
+            built = update_built_state(built, actions)
+            for name, is_built in built.items():
+                if is_built and not actions.get(name, 0.0):
+                    actions[name] = 1.0
+                    q = _Q_BY_BINARY[name]
+                    actions[q] = CANONICAL_Q[q]
+
+            # Re-aplicar R1: el forzado de arriba puede revivir la costera un
+            # año después de que se construyó la completa, que la subsume.
+            # (built["costera"] se mantiene en 1: la obra existe y su CAPEX ya
+            # se pagó en su año de activación; solo deja de operar.)
+            if actions["act_desalacion_completa"] and actions["act_desalacion_costera"]:
+                actions["act_desalacion_costera"] = 0.0
+                actions["q_desalacion_costera"] = 0.0
+            return actions
         return policy_fn
 
     @staticmethod
