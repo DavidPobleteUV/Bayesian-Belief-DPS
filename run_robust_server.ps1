@@ -128,6 +128,14 @@ foreach ($s in $Seeds) {
     Write-Host ("  LANZADA seed={0}  PID {1}  -> {2}" -f $s, $p.Id, $log)
 }
 
+# Registro de lanzamiento. El .log NO sirve para medir tiempo: al reescribir un
+# archivo con el mismo nombre Windows conserva la CreationTime original, asi que
+# tras un intento fallido el ETA sale calculado desde horas antes.
+if ($procs.Count -gt 0) {
+    $procs | Select-Object Seed, ProcId, @{n = "StartUtc"; e = { (Get-Date).ToUniversalTime().ToString("o") } } |
+        Export-Csv (Join-Path $OutDir "launched.csv") -NoTypeInformation -Encoding ASCII
+}
+
 if ($procs.Count -eq 0) {
     Write-Host ""
     Write-Host "Nada que lanzar (todas las semillas ya tienen resultado)."
