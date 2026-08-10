@@ -57,9 +57,11 @@ class RobustPipeWEAP(PipeWEAP):
                 actions_history=result["actions_history"],
                 action_names_order=ACTION_NAMES_BINARY + ACTION_NAMES_QUANTITY,
                 decision_start_week=WARMUP_WEEKS + SPIN_UP_YEARS * WEEKS_PER_YEAR,
+                ap_demand_m3s=self._ap_demand(X_scen),
+                ap_town_order=self.ap_town_order,
             )
             all_J.append(list(objs.values()))
-        A = np.array(all_J, float)                          # (n_scen, 6) convención WEAP
+        A = np.array(all_J, float)                          # (n_scen, 7) convención WEAP
         # J4: factor según cuántas acciones enciende ESTA política (el sesgo del
         # surrogate crece con el nº de acciones; ver config_weap.j4_calibration_factor).
         n_act = 0
@@ -70,7 +72,7 @@ class RobustPipeWEAP(PipeWEAP):
         cal = j4_calibration_factor(n_act)
         # pasar a convención NSGA (J1,J3 a min) ANTES de mean/std, luego robustez
         M = np.column_stack([-A[:, 0], A[:, 1], -A[:, 2], A[:, 3] * cal,
-                             A[:, 4], A[:, 5]])             # J6 salinidad costera
+                             A[:, 4], A[:, 5], A[:, 6]])    # J51, J52, J6
         robust = M.mean(0) + self.lam * M.std(0)            # mean + λ·std por objetivo
         return tuple(robust.tolist())
 

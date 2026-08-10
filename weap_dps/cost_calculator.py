@@ -34,7 +34,7 @@ from weap_dps.config_weap import (
     ENERGY_PRICE_CLP_PER_KWH, J_PER_KWH,
     DISCOUNT_RATE, BASE_YEAR, ANALYSIS_HORIZON_Y, USD_CLP_RATE,
     ACTION_INFRA_PARAMS,
-    J5_FAILURE_THRESHOLD_FRAC, WEEKS_PER_YEAR, WARMUP_WEEKS,
+    J5_FAILURE_THRESHOLD_FRAC, J51_THRESHOLD_FRAC, WEEKS_PER_YEAR, WARMUP_WEEKS,
 )
 
 logger = logging.getLogger(__name__)
@@ -537,6 +537,70 @@ def j5_weeks_in_failure(surf_denorm: np.ndarray,
     return float(np.nansum(unmet_per_t > threshold))
 
 
+# ─── J51 / J52: reemplazo de J5 ──────────────────────────────────────────
+# J5 contaba semanas en que la SUMA del deficit de los 8 pueblos superaba
+# 100 m3/semana = 0.27% de la demanda. Bastaba que un pueblo fallara un poco
+# para marcar la semana, y el conteo se saturaba (93-96% del horizonte), asi
+# que no distinguia politicas. Se separa en dos metricas complementarias:
+#
+#   J51 = promedio ENTRE PUEBLOS de las semanas en que ESE pueblo falla
+#         -> cronicidad, y no la domina el pueblo peor servido
+#   J52 = peor año: max sobre años del deficit anual / demanda anual
+#         -> severidad del extremo, que es por lo que decide una sanitaria
+#
+# Ambas necesitan la demanda, que en este modelo es INPUT, no target: hay que
+# pasarla desde X ya desnormalizada (m3/s, igual que unmet).
+
+def _ap_unmet_and_demand(surf_denorm, target_names, ap_demand_m3s, town_order,
+                         decision_start_week):
+    """(unmet, demanda) alineados por pueblo, en m3/semana. None si falta info."""
+    if ap_demand_m3s is None or not town_order:
+        return None, None
+    idx = []
+    for t in town_order:
+        nm = "AP_UnmetDemand__" + t
+        if nm not in target_names:
+            return None, None
+        idx.append(target_names.index(nm))
+    u = np.maximum(surf_denorm[decision_start_week:, idx], 0.0) * SECONDS_PER_WEEK
+    d = np.maximum(np.asarray(ap_demand_m3s)[decision_start_week:], 0.0) * SECONDS_PER_WEEK
+    n = min(u.shape[0], d.shape[0])
+    return u[:n], d[:n]
+
+
+def j51_mean_town_failure_weeks(surf_denorm, target_names, ap_demand_m3s=None,
+                                town_order=None, decision_start_week=WARMUP_WEEKS,
+                                threshold_frac=J51_THRESHOLD_FRAC) -> float:
+    """Promedio entre pueblos del numero de semanas en falla de cada pueblo."""
+    u, d = _ap_unmet_and_demand(surf_denorm, target_names, ap_demand_m3s,
+                                town_order, decision_start_week)
+    if u is None:
+        return float("nan")
+    safe = np.where(d > 1e-9, d, np.nan)
+    fail = (u / safe) > threshold_frac          # (T, n_pueblos)
+    return float(np.nanmean(np.nansum(fail, axis=0)))
+
+
+def j52_worst_year_unmet_frac(surf_denorm, target_names, ap_demand_m3s=None,
+                              town_order=None, decision_start_week=WARMUP_WEEKS) -> float:
+    """Peor año: max sobre años de (deficit anual de la cuenca / demanda anual)."""
+    u, d = _ap_unmet_and_demand(surf_denorm, target_names, ap_demand_m3s,
+                                town_order, decision_start_week)
+    if u is None:
+        return float("nan")
+    ut, dt = np.nansum(u, axis=1), np.nansum(d, axis=1)
+    n_y = len(ut) // WEEKS_PER_YEAR
+    if n_y < 1:
+        return float("nan")
+    fr = []
+    for y in range(n_y):
+        a, b = y * WEEKS_PER_YEAR, (y + 1) * WEEKS_PER_YEAR
+        dd = float(np.nansum(dt[a:b]))
+        if dd > 1e-9:
+            fr.append(float(np.nansum(ut[a:b])) / dd)
+    return float(np.max(fr)) if fr else float("nan")
+
+
 # ─── J6: salinidad promedio de los pozos costeros AP (acuífero Q09) ──────
 # WF_SalinityFactor está en los targets GW del MLP. Los pozos costeros son los
 # del acuífero Q09 expuestos a intrusión salina: Pichidangui (APU_Q09, 4),
@@ -612,14 +676,16 @@ def j6_coastal_salinity(gw_denorm: np.ndarray,
     return float(np.nanmean(np.stack(vals, axis=1)))
 
 
-# ─── Wrapper: calcula los 6 ──────────────────────────────────────────────
+# ─── Wrapper: calcula los 7 (J5 se partió en J51 y J52) ──────────────────
 def compute_objectives(gw_denorm: np.ndarray,
                        surf_denorm: np.ndarray,
                        target_names_gw: list[str],
                        target_names_surf: list[str],
                        actions_history: np.ndarray,
                        action_names_order: list[str],
-                       decision_start_week: int = WARMUP_WEEKS) -> dict[str, float]:
+                       decision_start_week: int = WARMUP_WEEKS,
+                       ap_demand_m3s: np.ndarray | None = None,
+                       ap_town_order: list[str] | None = None) -> dict[str, float]:
     return {
         "J1_gw_storage":    j1_gw_storage(gw_denorm, target_names_gw, decision_start_week=decision_start_week),
         "J2_unmet_ap":      j2_unmet_ap(surf_denorm, target_names_surf, decision_start_week=decision_start_week),
@@ -631,6 +697,11 @@ def compute_objectives(gw_denorm: np.ndarray,
                                             decision_start_week=decision_start_week,
                                             actions_history=actions_history,
                                             action_names_order=action_names_order),
-        "J5_weeks_failure": j5_weeks_in_failure(surf_denorm, target_names_surf, decision_start_week=decision_start_week),
+        "J51_mean_town_fail": j51_mean_town_failure_weeks(
+            surf_denorm, target_names_surf, ap_demand_m3s=ap_demand_m3s,
+            town_order=ap_town_order, decision_start_week=decision_start_week),
+        "J52_worst_year_frac": j52_worst_year_unmet_frac(
+            surf_denorm, target_names_surf, ap_demand_m3s=ap_demand_m3s,
+            town_order=ap_town_order, decision_start_week=decision_start_week),
         "J6_coastal_salinity": j6_coastal_salinity(gw_denorm, target_names_gw, decision_start_week=decision_start_week),
     }

@@ -196,6 +196,46 @@ class MLPSurrogate:
         return gw_names, surf_names, gw_methods, surf_methods
 
     # ─────────────────────────────────────────────────────────────────
+    # Desnormalización por columnas sueltas
+    # ─────────────────────────────────────────────────────────────────
+    def _inv_transform(self, vals: np.ndarray, method: str) -> np.ndarray:
+        """Inversa de log / arcsinh / identidad (misma convención que denormalize_y)."""
+        method = str(method)
+        if method == "log":
+            return np.maximum(np.exp(np.clip(vals, -30, 30)) - self.transform_alpha, 0.0)
+        if method == "arcsinh":
+            return np.sinh(vals) * self.transform_alpha
+        return vals
+
+    def denormalize_y_cols(self, y_norm: np.ndarray, cols, kind: str = "surface") -> np.ndarray:
+        """Desnormaliza SOLO las columnas pedidas de gw/surface.
+
+        `denormalize_y` exige el bloque completo. Para el estado de la política
+        se necesitan 3 o 4 columnas por año, y desnormalizar 126 o 318 en cada
+        decisión multiplica el costo del rollout sin ninguna ganancia.
+        """
+        mean = self.y_mean_gw if kind == "gw" else self.y_mean_surf
+        std = self.y_std_gw if kind == "gw" else self.y_std_surf
+        meth = self.transform_methods_gw if kind == "gw" else self.transform_methods_surf
+        cols = np.asarray(cols, dtype=int)
+        out = y_norm[..., cols] * std[cols] + mean[cols]
+        if meth is None:
+            return out
+        for k, j in enumerate(cols):
+            out[..., k] = self._inv_transform(out[..., k], meth[j])
+        return out
+
+    def denormalize_x_cols(self, x_norm: np.ndarray, cols) -> np.ndarray:
+        """Inversa exacta de normalize_x_value, vectorizada por columnas."""
+        cols = np.asarray(cols, dtype=int)
+        out = x_norm[..., cols] * self.x_std[cols] + self.x_mean[cols]
+        if self.transform_methods_x_filt is None:
+            return out
+        for k, j in enumerate(cols):
+            out[..., k] = self._inv_transform(out[..., k], self.transform_methods_x_filt[j])
+        return out
+
+    # ─────────────────────────────────────────────────────────────────
     # Alineación de escaladores con el espacio de columnas del modelo
     # ─────────────────────────────────────────────────────────────────
     def subset_x_scalers(self, x_idx) -> None:
@@ -349,6 +389,10 @@ class MLPSurrogate:
                     gw_preds[0].cpu().numpy(),
                     surf_preds[0].cpu().numpy(),
                     t_end_observed=t,
+                    # X (numpy, pre-tensor) sirve para la demanda: el rollout
+                    # solo sobreescribe columnas de accion, y la demanda ya
+                    # viene aplicada por scenario_builder.
+                    x_norm=X,
                 )
                 actions = policy_fn(state, year_idx)
                 policy_states.append(state)
@@ -430,26 +474,125 @@ class MLPSurrogate:
     # ─────────────────────────────────────────────────────────────────
     # State extraction
     # ─────────────────────────────────────────────────────────────────
-    def _extract_state(self, gw_norm: np.ndarray, surf_norm: np.ndarray,
-                       t_end_observed: int, lookback: int = 52) -> dict:
-        """
-        Resumen del estado del sistema en t=t_end_observed (decisión anual).
-        Por defecto usa los últimos 52 weeks (1 año) para promediar.
+    def configure_policy_state(self, feature_names: list[str]) -> None:
+        """Precalcula los índices que necesita el estado ampliado de la política.
 
-        Returns dict con escalares: gw_storage_avg, gw_storage_min,
-        surface_avg, recent_trend.
+        Se llama una vez desde PipeWEAP. Sin esto, `_extract_state` solo entrega
+        los agregados de GW (el estado histórico, ciego a J2/J3/J4/J6).
+        """
+        import re as _re
+        ts, tg = self.target_names_surf, self.target_names_gw
+
+        # pueblos con AMBAS series: el deficit relativo necesita demanda, que es
+        # un INPUT. El manifest activo deja 5 unmet y 4 demanda -> se usan los 4
+        # que tienen las dos. Los demas no pueden entrar en un ratio.
+        unmet = {n.split("__", 1)[1]: i for i, n in enumerate(ts)
+                 if n.startswith("AP_UnmetDemand__")}
+        dem = {n.split("__", 1)[1]: i for i, n in enumerate(feature_names)
+               if n.startswith("AP_WaterDemand__")}
+        towns = sorted(set(unmet) & set(dem))
+        self._st_towns = towns
+        self._st_unmet_y = [unmet[t] for t in towns]
+        self._st_dem_x = [dem[t] for t in towns]
+
+        self._st_agr_unmet = [i for i, n in enumerate(ts)
+                              if n.startswith("AGR_UnmetDemand__")]
+        # El déficit agrícola se normaliza contra el AGUA DE RIEGO entregada,
+        # no contra la producción: la producción está en kg/año y el déficit en
+        # m³/s, y esa razón no significa nada (daba 0.99 constante).
+        self._st_agr_irr = [i for i, n in enumerate(ts)
+                            if n.startswith("AGR_DailyIrrigation_m3")]
+        self._st_zcoast = [i for i, n in enumerate(tg)
+                           if n.startswith("WF_Zvalue__")
+                           and _re.search(r"(APU_Q09|APR_Q09|Pozo_Costero)", n)]
+
+        # links por tipo, para la fraccion de camiones
+        self._st_truck, self._st_supply = [], []
+        for i, n in enumerate(ts):
+            if n.startswith("AP_TransmissionLinks__") and "_to_" in n:
+                self._st_supply.append(i)
+        self._st_gw_storage = [i for i, n in enumerate(tg)
+                               if n.startswith("SHAC_storage_")]
+        logger.info("Estado de politica: %d pueblos con unmet+demanda (%s), "
+                    "%d pozos costeros, %d links de suministro",
+                    len(towns), ", ".join(towns), len(self._st_zcoast),
+                    len(self._st_supply))
+
+    def set_truck_columns(self, truck_idx: list[int]) -> None:
+        """Índices (en target_names_surf) de los links de camiones."""
+        self._st_truck = list(truck_idx)
+
+    def _extract_state(self, gw_norm: np.ndarray, surf_norm: np.ndarray,
+                       t_end_observed: int, lookback: int = 52,
+                       x_norm: np.ndarray | None = None) -> dict:
+        """
+        Resumen del estado del sistema en t=t_end_observed (decisión anual),
+        promediando las últimas `lookback` semanas.
+
+        Los agregados de GW van en espacio NORMALIZADO (son índices adimensionales
+        que la política aprende a leer). Los términos ligados a objetivos
+        (déficit, camiones, salinidad) se desnormalizan, porque son razones
+        físicas y su escala tiene que ser comparable entre escenarios.
         """
         t0 = max(0, t_end_observed - lookback)
-        gw_recent   = gw_norm[t0:t_end_observed]
-        surf_recent = surf_norm[t0:t_end_observed]
-        return {
-            "gw_storage_avg": float(np.nanmean(gw_recent)),
-            "gw_storage_min": float(np.nanmin(gw_recent)),
-            "surface_avg":    float(np.nanmean(surf_recent)),
-            "gw_trend":       float(np.nanmean(gw_recent[-13:]) - np.nanmean(gw_recent[:13]))
-                              if gw_recent.shape[0] >= 26 else 0.0,
+        gw_recent = gw_norm[t0:t_end_observed]
+        # "gw_storage" debe ser almacenamiento, no el promedio de las 318
+        # variables GW (que mezcla niveles, drenes y flujos inter-SHAC).
+        gw_sto = (gw_recent[:, self._st_gw_storage]
+                  if getattr(self, "_st_gw_storage", None) else gw_recent)
+        st = {
+            "gw_storage_avg": float(np.nanmean(gw_sto)),
+            "gw_storage_min": float(np.nanmin(gw_sto)),
+            "surface_avg":    float(np.nanmean(surf_norm[t0:t_end_observed])),
+            "gw_trend":       float(np.nanmean(gw_sto[-13:]) - np.nanmean(gw_sto[:13]))
+                              if gw_sto.shape[0] >= 26 else 0.0,
             "year_idx":       t_end_observed // WEEKS_PER_YEAR,
+            # defaults: si configure_policy_state no corrio, el estado ampliado
+            # queda neutro en vez de romper el rollout
+            "ap_unmet_frac": 0.0, "truck_frac": 0.0,
+            "agr_unmet_idx": 0.0, "z_coastal": 0.0,
         }
+        if not hasattr(self, "_st_towns") or t_end_observed <= t0:
+            return st
+
+        sl = surf_norm[t0:t_end_observed]
+
+        # J2: deficit AP relativo (m3/s en ambos → la razón es adimensional)
+        if self._st_towns and x_norm is not None:
+            u = self.denormalize_y_cols(sl, self._st_unmet_y, "surface")
+            d = self.denormalize_x_cols(x_norm[t0:t_end_observed], self._st_dem_x)
+            u = np.maximum(np.nan_to_num(u), 0.0).sum()
+            d = np.maximum(np.nan_to_num(d), 0.0).sum()
+            st["ap_unmet_frac"] = float(u / d) if d > 1e-9 else 0.0
+
+        # J3: deficit agricola como INDICE normalizado (z-score), no como razon.
+        # Se probaron dos denominadores y ninguno sirve:
+        #   - produccion: esta en kg/año contra un deficit en m3/s
+        #   - riego entregado (AGR_DailyIrrigation_m3): el MLP lo predice ~400
+        #     contra 5.7e6 observados, esas columnas estan practicamente muertas
+        # En WEAP observado la razon ya daba 0.944 y saturaba. El z-score no
+        # mezcla unidades, es O(1) y varia con el estres agricola, que es lo
+        # unico que la politica necesita leer.
+        if self._st_agr_unmet:
+            st["agr_unmet_idx"] = float(np.nanmean(sl[:, self._st_agr_unmet]))
+
+        # J4: cuanto del suministro viene en camiones (la fuente cara)
+        if getattr(self, "_st_truck", None) and self._st_supply:
+            tk = np.maximum(np.nan_to_num(
+                self.denormalize_y_cols(sl, self._st_truck, "surface")), 0).sum()
+            tot = np.maximum(np.nan_to_num(
+                self.denormalize_y_cols(sl, self._st_supply, "surface")), 0).sum()
+            st["truck_frac"] = float(tk / tot) if tot > 1e-9 else 0.0
+
+        # J6: interfaz salina en los pozos costeros. Se deja NORMALIZADA a
+        # proposito: en metros son ~-25, y con pesos en [-3,3] la tanh de la
+        # primera capa satura al instante y la entrada deja de informar. Las
+        # demas entradas son razones en [0,1], asi que conviene que esta
+        # tambien sea O(1).
+        if self._st_zcoast:
+            st["z_coastal"] = float(np.nanmean(
+                gw_norm[t0:t_end_observed][:, self._st_zcoast]))
+        return st
 
     # ─────────────────────────────────────────────────────────────────
     # Denormalización

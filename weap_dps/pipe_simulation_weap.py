@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from weap_dps.config_weap import (
     SPIN_UP_YEARS, DECISION_YEARS, WARMUP_WEEKS, WEEKS_PER_YEAR,
     N_WEEKS_HORIZON, j4_calibration_factor, DPS_WATERFALL,
+    POLICY_STATE_FEATURES, N_STATE_FEATURES,
 )
 from weap_dps.mlp_surrogate import MLPSurrogate
 from weap_dps.action_translator import (
@@ -87,6 +88,14 @@ class PipeWEAP:
         # Lookup de columnas de acción
         self.action_col_idx = build_action_col_idx(self.feature_names)
 
+        # Estado ampliado de la política: antes solo veía agregados de GW y el
+        # calendario, así que no podía reaccionar a J2/J3/J4/J6 — los objetivos
+        # que de hecho varían a lo largo del frente.
+        self.surrogate.configure_policy_state(self.feature_names)
+        self.ap_town_order = list(getattr(self.surrogate, "_st_towns", []))
+        self._ap_dem_cols = list(getattr(self.surrogate, "_st_dem_x", []))
+        self.surrogate.set_truck_columns(self._truck_link_cols())
+
         # Target names — vienen del surrogate (ya cargados desde el manifest)
         self.target_names_gw   = self.surrogate.target_names_gw
         self.target_names_surf = self.surrogate.target_names_surf
@@ -101,8 +110,45 @@ class PipeWEAP:
             logger.info(".3 WATERFALL enabled — J4 uses well-anchored cascade "
                         "(%d towns mapped)", len(self.waterfall.towns))
 
+    def _ap_demand(self, X_scen: np.ndarray) -> np.ndarray | None:
+        """Demanda AP por pueblo (m³/s), desnormalizada desde el escenario.
+
+        J51/J52 son razones déficit/demanda, y la demanda es INPUT del modelo,
+        no target: hay que sacarla de X. Cada escenario tiene su propia demanda
+        (los corners de población la escalan), así que se recalcula por escenario.
+        """
+        if not self._ap_dem_cols:
+            return None
+        return self.surrogate.denormalize_x_cols(X_scen, self._ap_dem_cols)
+
+    def _truck_link_cols(self) -> list[int]:
+        """Índices de los links de camiones en target_names_surf.
+
+        Los camiones son la fuente cara de emergencia (8000 CLP/m³): su peso en
+        el suministro es el mejor indicador de estrés que la política puede leer
+        para anticipar J4.
+        """
+        import pandas as pd
+        from weap_dps.config_weap import TOWN_SOURCE_COST_CSV
+        if not Path(TOWN_SOURCE_COST_CSV).exists():
+            logger.warning("Sin %s: truck_frac quedará en 0", TOWN_SOURCE_COST_CSV)
+            return []
+        cm = pd.read_csv(TOWN_SOURCE_COST_CSV)
+        cm["withdrawal_node"] = cm["withdrawal_node"].astype(str).str.strip()
+        nodes = set(cm[cm["source_type"] == "Camiones"]["withdrawal_node"])
+        cols = []
+        # del surrogate, no de self: self.target_names_surf se asigna más abajo
+        for i, n in enumerate(self.surrogate.target_names_surf):
+            if not (n.startswith("AP_TransmissionLinks__") and "_to_" in n):
+                continue
+            s = n.split("__", 1)[1].rsplit("_to_", 1)[0].replace("Transmission_Link_from_", "")
+            if s.startswith("Withdrawal_Node_") and s.replace("Withdrawal_Node_", "") in nodes:
+                cols.append(i)
+        return cols
+
     # ─── Policy NN del DPS ──────────────────────────────────────────────
-    def _build_policy_from_params(self, P: np.ndarray, n_state_features: int = 4):
+    def _build_policy_from_params(self, P: np.ndarray,
+                                  n_state_features: int = N_STATE_FEATURES):
         """
         Construye una mini-NN del policy con los parámetros P (flat array).
         Arquitectura: state (n_state_features) → hidden (M) → sigmoid(K).
@@ -133,10 +179,13 @@ class PipeWEAP:
             if year_idx == 0:
                 built = init_built_state()
 
-            s = np.array([state_dict["gw_storage_avg"],
-                          state_dict["gw_storage_min"],
-                          state_dict["gw_trend"],
-                          year_idx / 35.0], dtype=float)
+            # Los flags built_* salen de este closure, no de _extract_state:
+            # son estado de la POLITICA (que ya construyo), no del sistema.
+            # built_X  ->  act_X, que es como se llaman en ACTION_NAMES_INFRA
+            s = np.array([built.get("act_" + f[6:], 0.0) if f.startswith("built_")
+                          else state_dict.get(f, 0.0)
+                          for f in POLICY_STATE_FEATURES], dtype=float)
+            s = np.nan_to_num(s, nan=0.0, posinf=0.0, neginf=0.0)
             h = np.tanh(s @ W1 + b1)
             raw = h @ W2 + b2
             pi = 1.0 / (1.0 + np.exp(-raw))   # sigmoid → [0,1]
@@ -200,6 +249,8 @@ class PipeWEAP:
                 surf_denorm = self.waterfall.apply(surf_denorm, result["X_used"])
 
             objs = compute_objectives(
+                ap_demand_m3s=self._ap_demand(X_scen),
+                ap_town_order=self.ap_town_order,
                 gw_denorm=gw_denorm,
                 surf_denorm=surf_denorm,
                 target_names_gw=self.target_names_gw,
@@ -234,7 +285,8 @@ class PipeWEAP:
              J_mean[1],                           # J2 unmet AP
             -J_mean[2],                           # J3 agri value (max → neg)
              J_mean[3] * cal,                     # J4 cost (calibrado por nº acciones)
-             J_mean[4],                           # J5 weeks failure
-             J_mean[5],                           # J6 salinidad costera (min)
+             J_mean[4],                           # J51 semanas de falla, promedio por pueblo
+             J_mean[5],                           # J52 peor año (déficit/demanda)
+             J_mean[6],                           # J6 salinidad costera (min)
         ]
         return tuple(J)

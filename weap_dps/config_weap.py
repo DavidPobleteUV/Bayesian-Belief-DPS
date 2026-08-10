@@ -217,6 +217,35 @@ ACTION_INFRA_PARAMS = {
 # ─── Umbrales / criterios de objetivos ─────────────────────────────────────
 J5_FAILURE_THRESHOLD_FRAC = 0.10   # semana en falla si Unmet/Demand > 10%
 
+# J5 se separó en dos porque medían cosas distintas y ninguna discriminaba:
+#   J51 = promedio ENTRE PUEBLOS de sus semanas en falla (cronicidad)
+#   J52 = peor año, deficit/demanda de la cuenca (severidad del extremo)
+# La version anterior sumaba el deficit de todos los pueblos y lo comparaba
+# con un umbral ABSOLUTO de 100 m3/semana = 0.27% de la demanda: bastaba que
+# UN pueblo fallara un poco para marcar la semana, y el conteo se saturaba.
+J51_THRESHOLD_FRAC = 0.10          # pueblo en falla esa semana si unmet/dem > 10%
+
+# ─── Estado que observa la política del DPS ────────────────────────────────
+# Fuente unica de verdad para N. Antes el 4 estaba repetido en tres archivos
+# (pipe_problem, pipe_simulation) y desincronizarlos rompe el tamaño de P.
+#
+# NO incluye el calendario a proposito. Con year_idx como entrada, NSGA-II
+# puede codificar cronogramas de lazo ABIERTO ("construir en el año 5") en vez
+# de reglas de lazo cerrado ("construir si el acuífero baja de X"), que es
+# justamente lo que un Direct Policy Search busca demostrar.
+POLICY_STATE_FEATURES = [
+    "gw_storage_avg",        # nivel medio del acuífero, ultimas 52 semanas
+    "gw_trend",              # tendencia intra-anual
+    "ap_unmet_frac",         # J2: deficit AP / demanda AP del ultimo año
+    "truck_frac",            # J4: fraccion del suministro que viene en camiones
+    "agr_unmet_idx",         # J3: deficit agricola (indice normalizado)
+    "z_coastal",             # J6: cota de la interfaz salina en los pozos Q09
+    "built_desalacion_costera",    # que obras YA existen (irreversibles)
+    "built_desalacion_completa",
+    "built_nuevo_pozo_a_5km",
+]
+N_STATE_FEATURES = len(POLICY_STATE_FEATURES)
+
 # ─── Calibración de J4 (costo) ─────────────────────────────────────────────
 # factor = E[costo_obs] / E[costo_pred] sobre las fuentes de RESPALDO (aducción,
 # pozo costero, desal, acuerdo, camiones). Los pozos propios se excluyen: su
