@@ -268,8 +268,15 @@ N_STATE_FEATURES = len(POLICY_STATE_FEATURES)
 # calibrar -> 20% con escalar -> 16% condicional).
 #
 # El ORDEN sí lo preserva bien el surrogate: Spearman(costo_obs, costo_pred)
-# = 0.92 sobre los 113 runs.
-J4_CAL_BY_NACTIONS = {0: 1.168, 1: 1.429, 2: 1.535, 3: 2.067}   # 3 = "3 o más"
+# = 0.83 sobre los 113 runs de test.
+#
+# Recalculado para iter1_clean_h256 (el h128 daba {0:1.168, 1:1.439, 2:1.577,
+# 3:2.079}). h256 sesga menos y con cola más corta: ratio mediano 1.34 vs 1.48,
+# p90 2.00 vs 3.16, y el error residual de J4 tras calibrar baja de 15.9% a
+# 10.8%. Las tarifas usadas son las de UNIT_COST_BY_SOURCE; si esas cambian,
+# hay que recalcular esta tabla (la mezcla de fuentes difiere entre observado y
+# predicho, así que las tarifas NO se cancelan en el cociente).
+J4_CAL_BY_NACTIONS = {0: 1.146, 1: 1.342, 2: 1.409, 3: 1.683}   # 3 = "3 o más"
 
 # Compat / override manual: si DPS_J4_CAL está seteado se usa ESE escalar para
 # todos los casos (ignora la tabla). Útil para reproducir corridas antiguas.
