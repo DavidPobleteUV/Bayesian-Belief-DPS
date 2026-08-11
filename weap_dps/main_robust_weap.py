@@ -20,6 +20,7 @@ from platypus import NSGAII
 from weap_dps.config_weap import (
     OPTIMIZER_CONFIG, RESULTS_DIR, ZARR_TEMPLATE_PATH,
     SPIN_UP_YEARS, DECISION_YEARS, WARMUP_WEEKS, WEEKS_PER_YEAR, j4_calibration_factor,
+    OBJ_OPT_IDX, OBJECTIVES_OPTIMIZED, OBJECTIVES_DIAGNOSTIC, OBJECTIVE_NAMES,
 )
 from weap_dps.pipe_simulation_weap import PipeWEAP
 from weap_dps.pipe_problem_weap import PipeProblemWEAP
@@ -38,6 +39,18 @@ class RobustPipeWEAP(PipeWEAP):
     def __init__(self, *a, lam: float = 1.0, **k):
         super().__init__(*a, **k)
         self.lam = lam
+        # J1 y J6 se calculan pero NSGA no los optimiza. Se cachean por politica
+        # para poder reportarlos sobre el frente final sin re-evaluarlo (serian
+        # ~100 politicas x 15 escenarios = 45 min extra por semilla).
+        self._diag = {}
+
+    @staticmethod
+    def _key(P) -> tuple:
+        return tuple(np.round(np.asarray(P, dtype=float), 12).tolist())
+
+    def all_objectives_for(self, P) -> np.ndarray | None:
+        """Los 7 objetivos de una politica ya evaluada (None si no esta)."""
+        return self._diag.get(self._key(P))
 
     def simulation(self, P: np.ndarray):
         policy_fn = self._build_policy_from_params(P)
@@ -74,7 +87,9 @@ class RobustPipeWEAP(PipeWEAP):
         M = np.column_stack([-A[:, 0], A[:, 1], -A[:, 2], A[:, 3] * cal,
                              A[:, 4], A[:, 5], A[:, 6]])    # J51, J52, J6
         robust = M.mean(0) + self.lam * M.std(0)            # mean + λ·std por objetivo
-        return tuple(robust.tolist())
+        # Los 7 quedan guardados; NSGA solo recibe los que discriminan.
+        self._diag[self._key(P)] = robust.copy()
+        return tuple(robust[OBJ_OPT_IDX].tolist())
 
 
 def main():
@@ -103,9 +118,22 @@ def main():
     t0 = time.time(); algo.run(args.evaluations); el = time.time() - t0
     logger.info("Listo en %.1f min  | frente=%d", el / 60, len(algo.result))
 
+    n_hit = sum(pipe.all_objectives_for(s.variables) is not None for s in algo.result)
+    logger.info("Diagnostico (J1, J6) recuperado para %d/%d politicas del frente",
+                n_hit, len(algo.result))
+
     with open(args.output, "wb") as f:
         pickle.dump({"result": [(list(s.variables), list(s.objectives)) for s in algo.result],
-                     "scenarios": labels, "lam": args.lam, "config": vars(args), "elapsed": el}, f)
+                     # los 7 objetivos por politica: los 5 optimizados mas J1 y J6
+                     "all_objectives": [
+                         (lambda v: None if v is None else list(v))(
+                             pipe.all_objectives_for(s.variables))
+                         for s in algo.result],
+                     "objective_names": OBJECTIVE_NAMES,
+                     "objectives_optimized": OBJECTIVES_OPTIMIZED,
+                     "objectives_diagnostic": OBJECTIVES_DIAGNOSTIC,
+                     "scenarios": labels, "lam": args.lam,
+                     "config": vars(args), "elapsed": el}, f)
     logger.info("Guardado: %s", args.output)
 
 

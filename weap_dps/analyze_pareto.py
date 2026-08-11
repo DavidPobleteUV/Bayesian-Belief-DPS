@@ -27,13 +27,25 @@ from pathlib import Path
 
 import numpy as np
 
-# Nombre y signo de cada objetivo. J1 y J3 se optimizan negados (NSGA minimiza
-# todo), así que para MOSTRARLOS hay que devolverles el signo.
-OBJ_7 = [("GW storage", -1), ("Déficit AP", 1), ("Valor agrícola", -1),
-         ("Costo J4", 1), ("Semanas falla/pueblo", 1), ("Peor año", 1),
-         ("Salinidad", 1)]
-OBJ_6 = [("GW storage", -1), ("Déficit AP", 1), ("Valor agrícola", -1),
-         ("Costo J4", 1), ("Semanas falla", 1), ("Salinidad", 1)]
+# Nombre legible y signo de cada objetivo. J1 y J3 se optimizan NEGADOS (NSGA
+# minimiza todo), así que para mostrarlos hay que devolverles el signo.
+PRETTY = {
+    "J1_gw_storage":       ("GW storage", -1),
+    "J2_unmet_ap":         ("Déficit AP", 1),
+    "J3_agri_value":       ("Valor agrícola", -1),
+    "J4_supply_cost":      ("Costo J4", 1),
+    "J5_weeks_failure":    ("Semanas falla", 1),
+    "J51_mean_town_fail":  ("Sem. falla/pueblo", 1),
+    "J52_worst_year_frac": ("Peor año", 1),
+    "J6_coastal_salinity": ("Salinidad", 1),
+}
+# Corridas viejas no guardaban los nombres: se deducen de cuántos objetivos hay.
+LEGACY = {
+    6: ["J1_gw_storage", "J2_unmet_ap", "J3_agri_value", "J4_supply_cost",
+        "J5_weeks_failure", "J6_coastal_salinity"],
+    7: ["J1_gw_storage", "J2_unmet_ap", "J3_agri_value", "J4_supply_cost",
+        "J51_mean_town_fail", "J52_worst_year_frac", "J6_coastal_salinity"],
+}
 
 
 def nondominated(F: np.ndarray) -> np.ndarray:
@@ -65,17 +77,37 @@ def eps_add(A: np.ndarray, R: np.ndarray) -> float:
 
 
 def load(d: Path):
-    seeds, F, V, el = [], {}, {}, {}
+    """F = objetivos OPTIMIZADOS (los que vio NSGA). A = los 7, si están.
+
+    Se separan a propósito: la convergencia se mide en el espacio que la
+    búsqueda realmente exploró, mientras que los diagnósticos (J1, J6) solo
+    se reportan. Mezclarlos falsearía el hipervolumen.
+    """
+    seeds, F, V, A, el = [], {}, {}, {}, {}
+    names = diag = None
     for f in sorted(d.glob("pareto_seed*.dat")):
         s = int(f.stem.replace("pareto_seed", ""))
         obj = pickle.load(open(f, "rb"))
         F[s] = np.array([r[1] for r in obj["result"]], dtype=float)
         V[s] = np.array([r[0] for r in obj["result"]], dtype=float)
         el[s] = obj.get("elapsed", float("nan")) / 3600.0
+        ao = obj.get("all_objectives")
+        if ao and all(x is not None for x in ao):
+            A[s] = np.array(ao, dtype=float)
+        names = obj.get("objective_names", names)
+        diag = obj.get("objectives_diagnostic", diag)
+        opt = obj.get("objectives_optimized")
         seeds.append(s)
     if not seeds:
         raise SystemExit(f"No hay pareto_seed*.dat en {d}")
-    return seeds, F, V, el
+    n = F[seeds[0]].shape[1]
+    if names is None:                       # corrida antigua sin metadatos
+        names = LEGACY.get(n)
+        opt = names
+        diag = []
+        if names is None:
+            raise SystemExit(f"{n} objetivos y sin 'objective_names' en el .dat")
+    return seeds, F, V, A, el, names, opt or names, diag or []
 
 
 def main():
@@ -84,12 +116,12 @@ def main():
     ap.add_argument("--fig", type=Path, default=None, help="PNG del frente")
     a = ap.parse_args()
 
-    seeds, F, V, el = load(a.dir)
-    n_obj = F[seeds[0]].shape[1]
-    spec = OBJ_7 if n_obj == 7 else OBJ_6
-    if len(spec) != n_obj:
-        raise SystemExit(f"{n_obj} objetivos: no calza con 6 ni 7")
+    seeds, F, V, A, el, names, opt, diag = load(a.dir)
+    spec = [PRETTY.get(o, (o, 1)) for o in opt]
 
+    print(f"optimizados ({len(opt)}): {', '.join(opt)}")
+    if diag:
+        print(f"diagnóstico ({len(diag)}): {', '.join(diag)}")
     for s in seeds:
         print(f"seed {s:5d}: {F[s].shape[0]:3d} soluciones | "
               f"{V[s].shape[1]:3d} params | {el[s]:5.1f} h")
@@ -114,6 +146,17 @@ def main():
         print(f"{nm:22s} {c.min():13.4e} {c.max():13.4e} "
               f"{(c.max()-c.min())/sc:9.1%}{flag}")
 
+    if A and diag:
+        allA = np.vstack([A[s] for s in seeds if s in A])
+        print(f"\n=== diagnóstico (NO optimizados, sobre todas las políticas) ===")
+        for o in diag:
+            i = names.index(o)
+            nm, sg = PRETTY.get(o, (o, 1))
+            c = allA[:, i] * sg
+            sc = max(abs(c).max(), 1e-12)
+            print(f"{nm:22s} {c.min():13.4e} {c.max():13.4e} "
+                  f"{(c.max()-c.min())/sc:9.1%}")
+
     print(f"\n=== aporte y calidad por semilla ===")
     print(f"{'semilla':>8} {'aporta':>8} {'%frente':>9} {'hiperv.':>10} {'eps-adit.':>10}")
     hvs = {}
@@ -129,11 +172,16 @@ def main():
     cv = 100 * h.std() / h.mean()
     hv_ref = hv_mc(ref)
     print(f"\nhipervolumen: media={h.mean():.4f}  sd={h.std():.4f}  CV={cv:.1f}%")
-    print(f"  {'CONVERGIO' if cv < 10 else 'NO convergio (CV alto: sube --evaluations)'}"
-          f"  — semillas independientes {'coinciden' if cv < 10 else 'divergen'}")
-    print(f"frente combinado: {hv_ref:.4f}  "
-          f"(+{100*(hv_ref/h.mean()-1):.0f}% sobre una semilla sola)")
-    print("  -> reportar la UNION de las semillas, no una sola")
+    if len(seeds) < 2:
+        # con una sola semilla el CV es 0 por construccion y no dice nada
+        print("  1 sola semilla: la convergencia NO es evaluable (hacen falta >= 3)")
+    else:
+        print(f"  {'CONVERGIO' if cv < 10 else 'NO convergio (CV alto: sube --evaluations)'}"
+              f"  — {len(seeds)} semillas independientes "
+              f"{'coinciden' if cv < 10 else 'divergen'}")
+        print(f"frente combinado: {hv_ref:.4f}  "
+              f"(+{100*(hv_ref/h.mean()-1):.0f}% sobre una semilla sola)")
+        print("  -> reportar la UNION de las semillas, no una sola")
 
     if a.fig:
         _figure(allF[ref_idx], spec, owner[ref_idx], seeds, a.fig)
@@ -149,7 +197,8 @@ def _figure(P, spec, owner, seeds, out: Path):
     labels = [n for n, _ in spec]
     mn, mx = V.min(0), V.max(0)
     Vn = (V - mn) / np.where(mx - mn > 0, mx - mn, 1)
-    ci = [n for n, _ in spec].index("Costo J4")
+    lab0 = [n for n, _ in spec]
+    ci = lab0.index("Costo J4") if "Costo J4" in lab0 else 0
 
     fig, (ax, ax2) = plt.subplots(2, 1, figsize=(14, 10),
                                   gridspec_kw={"height_ratios": [1.2, 1]})
@@ -172,13 +221,14 @@ def _figure(P, spec, owner, seeds, out: Path):
     fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap="viridis"), ax=ax,
                  label="Costo J4", pad=0.01)
 
-    di = [n for n, _ in spec].index("Déficit AP")
-    sc = ax2.scatter(V[:, ci], V[:, di], c=V[:, 2], cmap="plasma", s=26,
+    di = lab0.index("Déficit AP") if "Déficit AP" in lab0 else min(1, len(lab0) - 1)
+    k = next((j for j in range(len(lab0)) if j not in (ci, di)), 0)
+    sc = ax2.scatter(V[:, ci], V[:, di], c=V[:, k], cmap="plasma", s=26,
                      edgecolor="k", linewidth=0.25)
     ax2.set_xlabel(labels[ci]); ax2.set_ylabel(labels[di])
     ax2.set_title("Trade-off dominante: costo vs déficit")
     ax2.grid(alpha=0.3)
-    fig.colorbar(sc, ax=ax2, label=labels[2])
+    fig.colorbar(sc, ax=ax2, label=labels[k])
     fig.savefig(out, dpi=150, bbox_inches="tight")
 
 

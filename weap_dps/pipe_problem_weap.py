@@ -11,7 +11,7 @@ import logging
 import numpy as np
 from platypus import Problem, Real
 
-from weap_dps.config_weap import N_STATE_FEATURES
+from weap_dps.config_weap import N_STATE_FEATURES, N_OBJECTIVES
 from weap_dps.pipe_simulation_weap import PipeWEAP
 
 logger = logging.getLogger(__name__)
@@ -38,13 +38,13 @@ class PipeProblemWEAP(Problem):
         # cost_calculator.j6_coastal_salinity / salinity_from_zvalue).
         # Antes se había eliminado porque sin zeta solo había discriminación
         # gruesa y el riesgo quedaba capturado de forma indirecta por J1 y J4.
-        # 7 objetivos: J5 se partió en J51 (semanas de falla, promedio por
-        # pueblo) y J52 (peor año). El J5 original sumaba el déficit de todos
-        # los pueblos contra un umbral absoluto de 100 m3/semana y se saturaba.
-        super().__init__(n_vars, 7)
+        # Se calculan 7 (J5 se partió en J51/J52) pero se OPTIMIZAN los que
+        # discriminan: J1 y J6 varían 2.4% y 0.2% sobre el frente, así que solo
+        # subían la dimensión y con ella la no-dominancia geométrica.
+        super().__init__(n_vars, N_OBJECTIVES)
         self.types[:] = [Real(var_lo, var_hi) for _ in range(n_vars)]
         # Direcciones: todos minimize (J1 y J3 ya vienen negados en simulation())
-        self.directions[:] = [Problem.MINIMIZE] * 7
+        self.directions[:] = [Problem.MINIMIZE] * N_OBJECTIVES
 
     def evaluate(self, solution):
         P = np.array(solution.variables, dtype=float)

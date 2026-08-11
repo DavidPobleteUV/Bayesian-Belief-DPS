@@ -246,6 +246,23 @@ POLICY_STATE_FEATURES = [
 ]
 N_STATE_FEATURES = len(POLICY_STATE_FEATURES)
 
+# ─── Qué objetivos OPTIMIZA NSGA-II ────────────────────────────────────────
+# Orden en que compute_objectives los devuelve (ver cost_calculator).
+OBJECTIVE_NAMES = ["J1_gw_storage", "J2_unmet_ap", "J3_agri_value",
+                   "J4_supply_cost", "J51_mean_town_fail",
+                   "J52_worst_year_frac", "J6_coastal_salinity"]
+
+# J1 y J6 salen del conjunto de optimización: sobre el frente varían 2.4% y
+# 0.2% respectivamente, o sea no representan un trade-off. Mantenerlos solo
+# sube la dimensión, y en dimensión alta casi todo queda no dominado por
+# efecto geométrico (con 6 objetivos, 428 de 600 soluciones lo estaban).
+# SE SIGUEN CALCULANDO: se reportan como diagnóstico sobre el frente final.
+OBJECTIVES_OPTIMIZED = ["J2_unmet_ap", "J3_agri_value", "J4_supply_cost",
+                        "J51_mean_town_fail", "J52_worst_year_frac"]
+OBJECTIVES_DIAGNOSTIC = [o for o in OBJECTIVE_NAMES if o not in OBJECTIVES_OPTIMIZED]
+OBJ_OPT_IDX = [OBJECTIVE_NAMES.index(o) for o in OBJECTIVES_OPTIMIZED]
+N_OBJECTIVES = len(OBJ_OPT_IDX)
+
 # ─── Calibración de J4 (costo) ─────────────────────────────────────────────
 # factor = E[costo_obs] / E[costo_pred] sobre las fuentes de RESPALDO (aducción,
 # pozo costero, desal, acuerdo, camiones). Los pozos propios se excluyen: su

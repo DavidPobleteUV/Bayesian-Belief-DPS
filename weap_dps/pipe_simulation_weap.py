@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from weap_dps.config_weap import (
     SPIN_UP_YEARS, DECISION_YEARS, WARMUP_WEEKS, WEEKS_PER_YEAR,
     N_WEEKS_HORIZON, j4_calibration_factor, DPS_WATERFALL,
-    POLICY_STATE_FEATURES, N_STATE_FEATURES,
+    POLICY_STATE_FEATURES, N_STATE_FEATURES, OBJ_OPT_IDX,
 )
 from weap_dps.mlp_surrogate import MLPSurrogate
 from weap_dps.action_translator import (
@@ -288,5 +288,9 @@ class PipeWEAP:
              J_mean[4],                           # J51 semanas de falla, promedio por pueblo
              J_mean[5],                           # J52 peor año (déficit/demanda)
              J_mean[6],                           # J6 salinidad costera (min)
+        ]
+        self.last_all_objectives = np.array(J, dtype=float)
+        J = [
+            J[i] for i in OBJ_OPT_IDX             # NSGA solo ve los que discriminan
         ]
         return tuple(J)
