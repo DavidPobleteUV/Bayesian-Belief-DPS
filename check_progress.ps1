@@ -33,7 +33,10 @@ if ($procs.Count -gt 0) {
 $rows = @()
 foreach ($log in Get-ChildItem (Join-Path $OutDir "seed*.log") -ErrorAction SilentlyContinue) {
     $seed = $log.BaseName -replace "^seed", ""
-    $n = (Select-String -Path $log.FullName -Pattern "NPV TOTAL" -ErrorAction SilentlyContinue).Count
+    # El logging de Python va a STDERR por defecto: el .log queda vacio y todo
+    # el avance esta en el .err. Contar en el .log daba 0 siempre.
+    $src = if (Test-Path ($log.FullName + ".err")) { $log.FullName + ".err" } else { $log.FullName }
+    $n = (Select-String -Path $src -Pattern "NPV TOTAL" -ErrorAction SilentlyContinue).Count
     $evals = [int]($n / $NScen)
     $dat = Join-Path $OutDir ("pareto_seed{0}.dat" -f $seed)
     $done = Test-Path $dat
@@ -45,7 +48,7 @@ foreach ($log in Get-ChildItem (Join-Path $OutDir "seed*.log") -ErrorAction Sile
 
     # Un log sin actividad reciente y sin .dat es una semilla muerta, no una
     # semilla lenta. Se distingue por el ultimo escrito, no por el conteo.
-    $idle = ((Get-Date) - $log.LastWriteTime).TotalMinutes
+    $idle = ((Get-Date) - (Get-Item $src).LastWriteTime).TotalMinutes
     $estado = if ($done) { "lista" }
               elseif ($idle -gt 30) { "MUERTA?" }
               else { "corriendo" }
