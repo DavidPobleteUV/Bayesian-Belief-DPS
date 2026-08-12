@@ -51,10 +51,11 @@ foreach ($f in $need) {
 # Dependencias: un import que falla mata el proceso a los 2 s y deja el .err
 # como unica traza. Mejor descubrirlo aqui, en una sola linea, que en N logs.
 $mods = "numpy,torch,pytorch_lightning,zarr,pandas,platypus,rdm_mlp"
+# importlib.util NO queda disponible con solo "import importlib": es un
+# submodulo y hay que importarlo explicitamente.
 $chk = & $py -c @"
-import importlib, sys
-falta = [m for m in '$mods'.split(',') if importlib.util.find_spec(m) is None]
-print(','.join(falta))
+import importlib.util as u
+print(','.join([m for m in '$mods'.split(',') if u.find_spec(m) is None]))
 "@
 if ($LASTEXITCODE -ne 0) { throw "No se pudo ejecutar '$py'. Revisa el interprete." }
 if ($chk.Trim()) {
