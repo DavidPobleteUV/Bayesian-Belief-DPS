@@ -76,8 +76,13 @@ $env:PYTHONUNBUFFERED = "1"     # sin esto Python bufferea al redirigir a archiv
 $env:DPS_WATERFALL = "0"        # cascada determinista OFF (probada: empeora J4)
 
 $nScen = $NClimate * 3
-$eta   = [math]::Round($Evaluations * 1.18 * $nScen / 3600, 1)
+# 1.92 s por rollout de escenario, MEDIDO con iter1_clean_h256 (28.8 s por
+# evaluacion de 15 escenarios) tanto en el servidor como en la PC de trabajo.
+# El valor anterior (1.18) venia de medir h128 con UN escenario y subestimaba
+# el ETA a la mitad.
+$eta   = [math]::Round($Evaluations * 1.92 * $nScen / 3600, 1)
 $seedList = $Seeds -join ", "
+$modelo = Split-Path $OutDir -Leaf     # el nombre estaba fijo como "h128"
 
 # --- Aviso de RAM: cada proceso carga el modelo + los N escenarios en memoria.
 # Con muchas semillas en paralelo se puede agotar la RAM y los procesos mueren
@@ -100,7 +105,7 @@ if ($Seeds.Count -gt $maxSeeds) {
 }
 
 Write-Host ""
-Write-Host "Robust DPS - modelo iter1_clean_h128"
+Write-Host ("Robust DPS - salida {0}" -f $modelo)
 Write-Host ("  semillas     : {0}   (en paralelo)" -f $seedList)
 Write-Host ("  evaluaciones : {0}  | poblacion: {1}" -f $Evaluations, $Population)
 Write-Host ("  escenarios   : {0}  [{1} climas x 3 demandas]  | lambda={2}" -f $nScen, $NClimate, $Lambda)
