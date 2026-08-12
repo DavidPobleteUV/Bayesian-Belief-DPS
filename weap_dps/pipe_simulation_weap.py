@@ -19,8 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from weap_dps.config_weap import (
     SPIN_UP_YEARS, DECISION_YEARS, WARMUP_WEEKS, WEEKS_PER_YEAR,
     N_WEEKS_HORIZON, j4_calibration_factor, DPS_WATERFALL,
-    POLICY_STATE_FEATURES, N_STATE_FEATURES, OBJ_OPT_IDX,
+    POLICY_STATE_FEATURES, N_STATE_FEATURES, OBJ_OPT_IDX, DPS_BALANCE,
 )
+from weap_dps.balance_correction import apply_balance_correction, K_BALANCE
 from weap_dps.mlp_surrogate import MLPSurrogate
 from weap_dps.action_translator import (
     policy_output_to_actions, build_action_col_idx,
@@ -96,6 +97,15 @@ class PipeWEAP:
         self._ap_dem_cols = list(getattr(self.surrogate, "_st_dem_x", []))
         self.surrogate.set_truck_columns(self._truck_link_cols())
 
+        # Columnas para la corrección de balance (ver balance_correction.py)
+        self._link_idx = [i for i, n in enumerate(self.surrogate.target_names_surf)
+                          if n.startswith("AP_TransmissionLinks__") and "_to_" in n]
+        self._unmet_idx = [i for i, n in enumerate(self.surrogate.target_names_surf)
+                           if n.startswith("AP_UnmetDemand")]
+        logger.info("Correccion de balance: %s  (k=%.4f, %d links, %d unmet)",
+                    "ON" if DPS_BALANCE else "OFF", K_BALANCE,
+                    len(self._link_idx), len(self._unmet_idx))
+
         # Target names — vienen del surrogate (ya cargados desde el manifest)
         self.target_names_gw   = self.surrogate.target_names_gw
         self.target_names_surf = self.surrogate.target_names_surf
@@ -109,6 +119,28 @@ class PipeWEAP:
             )
             logger.info(".3 WATERFALL enabled — J4 uses well-anchored cascade "
                         "(%d towns mapped)", len(self.waterfall.towns))
+
+    def correct_balance(self, surf_denorm: np.ndarray, X_scen: np.ndarray) -> np.ndarray:
+        """Aplica la corrección de balance si está habilitada (DPS_BALANCE)."""
+        if not DPS_BALANCE:
+            return surf_denorm
+        return apply_balance_correction(
+            surf_denorm, self._link_idx, self._unmet_idx,
+            self._ap_demand_all(X_scen),
+            decision_start_week=WARMUP_WEEKS + SPIN_UP_YEARS * WEEKS_PER_YEAR)
+
+    def _ap_demand_all(self, X_scen: np.ndarray) -> np.ndarray | None:
+        """Demanda AP de TODOS los pueblos disponibles (m³/s).
+
+        Distinta de `_ap_demand`, que devuelve solo los 4 pueblos con unmet Y
+        demanda porque J51/J52 necesitan pares. El balance es del sistema
+        completo, así que usa todas las columnas de demanda que haya.
+        """
+        idx = [i for i, n in enumerate(self.feature_names)
+               if n.startswith("AP_WaterDemand__")]
+        if not idx:
+            return None
+        return self.surrogate.denormalize_x_cols(X_scen, idx)
 
     def _ap_demand(self, X_scen: np.ndarray) -> np.ndarray | None:
         """Demanda AP por pueblo (m³/s), desnormalizada desde el escenario.
@@ -247,6 +279,10 @@ class PipeWEAP:
             # well-anclada (y anula Acuerdo) ANTES de costear J4.
             if self.waterfall is not None:
                 surf_denorm = self.waterfall.apply(surf_denorm, result["X_used"])
+
+            # Balance: el surrogate entrega 0.826 del suministro observado.
+            # Se restaura ANTES de costear, no despues con un factor sobre J4.
+            surf_denorm = self.correct_balance(surf_denorm, X_scen)
 
             objs = compute_objectives(
                 ap_demand_m3s=self._ap_demand(X_scen),

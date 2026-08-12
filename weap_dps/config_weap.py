@@ -23,6 +23,12 @@ CKPT_PATH    = Path(os.environ["DPS_CKPT"]) if os.environ.get("DPS_CKPT") else D
 # desal/camiones como déficit con prioridad de precio, en vez de las predicciones
 # nativas del modelo. Ver weap_dps/waterfall_alloc.py.
 DPS_WATERFALL = os.environ.get("DPS_WATERFALL", "0") == "1"
+
+# Correccion de balance: impone S + U = k*D, la identidad que WEAP cumple con
+# CV 2.6% y el surrogate no (cierra 16% abajo y con 5x mas dispersion).
+# Reduce el error de J4 de 25.2% a 7.6%. Ver weap_dps/balance_correction.py.
+# ON por defecto; DPS_BALANCE=0 la apaga para reproducir corridas antiguas.
+DPS_BALANCE = os.environ.get("DPS_BALANCE", "1") == "1"
 MANIFEST_PATH = DATA_DIR / "manifest_inputs.csv"
 SCALERS_PATH  = DATA_DIR / "scalers_weap.npz"
 TRANSFORM_PARAMS_PATH = DATA_DIR / "transform_params_weap.npz"
@@ -287,13 +293,21 @@ N_OBJECTIVES = len(OBJ_OPT_IDX)
 # El ORDEN sí lo preserva bien el surrogate: Spearman(costo_obs, costo_pred)
 # = 0.83 sobre los 113 runs de test.
 #
-# Recalculado para iter1_clean_h256 (el h128 daba {0:1.168, 1:1.439, 2:1.577,
-# 3:2.079}). h256 sesga menos y con cola más corta: ratio mediano 1.34 vs 1.48,
-# p90 2.00 vs 3.16, y el error residual de J4 tras calibrar baja de 15.9% a
-# 10.8%. Las tarifas usadas son las de UNIT_COST_BY_SOURCE; si esas cambian,
-# hay que recalcular esta tabla (la mezcla de fuentes difiere entre observado y
-# predicho, así que las tarifas NO se cancelan en el cociente).
-J4_CAL_BY_NACTIONS = {0: 1.146, 1: 1.342, 2: 1.409, 3: 1.683}   # 3 = "3 o más"
+# Tabla RESIDUAL: se aplica DESPUÉS de la corrección de balance (DPS_BALANCE),
+# que ya elimina la mayor parte del sesgo restaurando S + U = k·D. Aplicar la
+# tabla antigua encima sería corregir dos veces.
+#
+#   solo calibración (h256)          : sesgo 0.748 -> error 10.8%
+#   balance + calibración residual   : sesgo 0.946 -> error  7.6%
+#
+# Los factores quedan cerca de 1 justamente porque el trabajo lo hace ahora la
+# corrección física sobre el suministro, no un factor empírico sobre el costo.
+# Si se apaga DPS_BALANCE hay que volver a {0:1.146, 1:1.342, 2:1.409, 3:1.683}.
+#
+# Las tarifas usadas son las de UNIT_COST_BY_SOURCE; si esas cambian hay que
+# recalcular (la mezcla de fuentes difiere entre observado y predicho, así que
+# las tarifas NO se cancelan en el cociente).
+J4_CAL_BY_NACTIONS = {0: 1.008, 1: 1.081, 2: 1.063, 3: 1.193}   # 3 = "3 o más"
 
 # Compat / override manual: si DPS_J4_CAL está seteado se usa ESE escalar para
 # todos los casos (ignora la tabla). Útil para reproducir corridas antiguas.

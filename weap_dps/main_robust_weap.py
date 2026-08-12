@@ -64,6 +64,7 @@ class RobustPipeWEAP(PipeWEAP):
             surf = self.surrogate.denormalize_y(result["surface"], kind="surface")
             if self.waterfall is not None:
                 surf = self.waterfall.apply(surf, result["X_used"])
+            surf = self.correct_balance(surf, X_scen)
             objs = compute_objectives(
                 gw_denorm=gw, surf_denorm=surf,
                 target_names_gw=self.target_names_gw, target_names_surf=self.target_names_surf,
