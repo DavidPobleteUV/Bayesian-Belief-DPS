@@ -24,10 +24,19 @@ from weap_dps.climate_sampler import SUBCUENCAS
 from weap_dps.demand_builder import POP_COLUMNS, AREA_COLUMNS, DEMAND_AP_COLUMNS
 
 # corners de demanda: (pop_growth, area_mult)
+#
+# Los tres niveles de crecimiento reproducen los del diseño experimental: en los
+# 900 runs de entrenamiento la población crece exactamente 2%/año (386 runs),
+# 3%/año (232) o 5%/año (282). No hay otros valores.
+#
+# MID estaba en 0.02, igual que LOW: el ensamble cubría solo DOS niveles (5% y
+# 2%) y el 3% —la mediana del diseño— nunca entraba. Además MID y LOW se
+# diferenciaban solo por el área, así que la dimensión población quedaba
+# representada por un único contraste en vez de un gradiente.
 DEMAND_CORNERS = {
-    "HIGH": (0.05, 1.00),   # mucha población, sin reducción de área
-    "MID":  (0.02, 1.00),
-    "LOW":  (0.02, 0.50),   # poca población, -50% área
+    "HIGH": (0.05, 1.00),   # crecimiento alto, sin reducción de área
+    "MID":  (0.03, 1.00),   # crecimiento medio
+    "LOW":  (0.02, 0.50),   # crecimiento bajo, -50% área
 }
 
 
@@ -58,11 +67,25 @@ def _grow_pop(base_series: np.ndarray, rate: float) -> np.ndarray:
 
 
 def _scale_demand(base_series: np.ndarray, rate: float) -> np.ndarray:
-    """Demanda potable: conserva el patrón semanal del template, lo amplifica por (1+rate)^año."""
-    T = len(base_series); out = base_series.copy().astype(float)
+    """Demanda potable: patrón semanal del PRIMER año, amplificado por (1+rate)^año.
+
+    Antes multiplicaba la serie completa del template por (1+rate)^año, pero esa
+    serie YA trae el crecimiento propio del run baseline (2%/año). Las tasas se
+    componían: el corner HIGH terminaba creciendo 1.02*1.05-1 = 7.10%/año en vez
+    de 5%, MID 5.06% en vez de 3% y LOW 4.04% en vez de 2%.
+
+    Peor aún, quedaba inconsistente con `_grow_pop`, que sí reinicia desde el
+    año 0: la población crecía a la tasa pedida y la demanda a otra distinta.
+    Ahora ambas usan la misma convención.
+    """
+    T = len(base_series)
+    out = base_series.copy().astype(float)
+    y0 = base_series[:WEEKS_PER_YEAR].astype(float)      # estacionalidad base
     for y in range(T // WEEKS_PER_YEAR + 1):
-        t0 = y * WEEKS_PER_YEAR; t1 = min(t0 + WEEKS_PER_YEAR, T)
-        out[t0:t1] = base_series[t0:t1] * (1.0 + rate) ** y
+        t0 = y * WEEKS_PER_YEAR
+        t1 = min(t0 + WEEKS_PER_YEAR, T)
+        if t1 > t0:
+            out[t0:t1] = y0[:t1 - t0] * (1.0 + rate) ** y
     return out
 
 
