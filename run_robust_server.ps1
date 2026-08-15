@@ -75,7 +75,12 @@ $env:PYTHONUNBUFFERED = "1"     # sin esto Python bufferea al redirigir a archiv
                                 # y los logs (y check_progress) van muy atrasados
 $env:DPS_WATERFALL = "0"        # cascada determinista OFF (probada: empeora J4)
 
-$nScen = $NClimate * 3
+# El numero de escenarios lo fija DPS_N_SOW (diseno balanceado clima x poblacion
+# x area), no NClimate*3 como cuando eran 3 corners fijos. Si se calcula mal, el
+# ETA y el porcentaje de check_progress salen mal (divide por este numero).
+$nScen = & $py -c "import sys; sys.path.insert(0,'.'); from weap_dps.config_weap import DPS_N_SOW; print(DPS_N_SOW)"
+if ($LASTEXITCODE -ne 0 -or -not $nScen) { $nScen = $NClimate * 3 }
+$nScen = [int]$nScen
 # 1.92 s por rollout de escenario, MEDIDO con iter1_clean_h256 (28.8 s por
 # evaluacion de 15 escenarios) tanto en el servidor como en la PC de trabajo.
 # El valor anterior (1.18) venia de medir h128 con UN escenario y subestimaba
@@ -108,7 +113,7 @@ Write-Host ""
 Write-Host ("Robust DPS - salida {0}" -f $modelo)
 Write-Host ("  semillas     : {0}   (en paralelo)" -f $seedList)
 Write-Host ("  evaluaciones : {0}  | poblacion: {1}" -f $Evaluations, $Population)
-Write-Host ("  escenarios   : {0}  [{1} climas x 3 demandas]  | lambda={2}" -f $nScen, $NClimate, $Lambda)
+Write-Host ("  escenarios   : {0}  [diseno balanceado clima x poblacion x area]  | lambda={1}" -f $nScen, $Lambda)
 Write-Host ("  ETA          : ~{0} h de reloj" -f $eta)
 Write-Host ("  salida       : {0}" -f $OutDir)
 Write-Host ""
