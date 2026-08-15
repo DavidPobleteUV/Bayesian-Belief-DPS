@@ -1,18 +1,31 @@
 # -*- coding: utf-8 -*-
 """
-scenario_builder.py — construye el ensamble climate × demand para Robust DPS.
+scenario_builder.py — ensamble de estados del mundo (SOW) para el Robust DPS.
 
-Cada escenario = un X normalizado (1872, n_x) listo para el rollout. Se parte del
-template normalizado (run-0) y se SOBRESCRIBEN solo las columnas que cambian
-(precip/temp/pob/demanda/área), normalizándolas con los scalers del surrogate.
-Así NO se tocan los lags GW iniciales (recursión).
+Cada escenario = un X normalizado listo para el rollout. Se parte del template
+normalizado (run-0) y se SOBRESCRIBEN las columnas que cambian, normalizándolas
+con los scalers del surrogate. Los lags GW iniciales no se tocan: el rollout los
+reemplaza con sus propias predicciones a partir del warmup.
 
-  climate: N realizaciones (dry→wet por precip total, filtrando P=0)
-  demand : corners pob×área   (HIGH 5%/1.0, MID 2%/1.0, LOW 2%/0.50)
+Tres incertidumbres, las mismas del diseño experimental de WEAP:
+
+  clima      : series curadas en config_weap.DPS_CLIMATE_RUNS
+  población  : 2% / 3% / 5% anual
+  uso de suelo agrícola : -50% / -15% / 0% / +20%
+
+Se combinan con un diseño BALANCEADO (build_sow_design), no con un factorial:
+9x3x4 serían 108 escenarios y 226 h de optimización. Con 27 se cubren las 12
+combinaciones población×área y cada clima aparece 3 veces.
+
+IMPORTANTE: al inyectar el clima hay que recalcular la precipitación ACUMULADA
+(PP_acum_*). Es la escala a la que responde el acuífero, y dejarla con los
+valores del template hacía que el modelo viera la misma climatología en todos
+los escenarios — la dimensión climática del ensamble quedaba muerta.
 
 Devuelve (scenarios: list[np.ndarray], labels: list[str]).
 """
 from __future__ import annotations
+import itertools
 import sys
 from pathlib import Path
 import numpy as np
@@ -20,25 +33,38 @@ import zarr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from weap_dps.config_weap import (MODEL_REPO, WEEKS_PER_YEAR, TRAIN_ZARR_PATH,
-                                  DPS_CLIMATE_RUNS)
+                                  DPS_CLIMATE_RUNS, POP_LEVELS, AREA_LEVELS,
+                                  DPS_N_SOW)
 from weap_dps.climate_sampler import SUBCUENCAS
 from weap_dps.demand_builder import POP_COLUMNS, AREA_COLUMNS, DEMAND_AP_COLUMNS
 
-# corners de demanda: (pop_growth, area_mult)
-#
-# Los tres niveles de crecimiento reproducen los del diseño experimental: en los
-# 900 runs de entrenamiento la población crece exactamente 2%/año (386 runs),
-# 3%/año (232) o 5%/año (282). No hay otros valores.
-#
-# MID estaba en 0.02, igual que LOW: el ensamble cubría solo DOS niveles (5% y
-# 2%) y el 3% —la mediana del diseño— nunca entraba. Además MID y LOW se
-# diferenciaban solo por el área, así que la dimensión población quedaba
-# representada por un único contraste en vez de un gradiente.
+# Corners heredados (población, área). Se mantienen para reproducir corridas
+# antiguas: el ensamble vigente usa el diseño balanceado de SOW, que separa
+# población de área en vez de confundirlas. Ver config_weap.DPS_N_SOW.
 DEMAND_CORNERS = {
-    "HIGH": (0.05, 1.00),   # crecimiento alto, sin reducción de área
-    "MID":  (0.03, 1.00),   # crecimiento medio
-    "LOW":  (0.02, 0.50),   # crecimiento bajo, -50% área
+    "HIGH": (0.05, 1.00),
+    "MID":  (0.03, 1.00),
+    "LOW":  (0.02, 0.50),
 }
+
+
+def build_sow_design(climate_runs: list[int], n_sow: int) -> list[tuple]:
+    """Diseño balanceado sobre clima × población × área.
+
+    Recorre el producto población×área con paso coprimo a su tamaño (12), de
+    modo que climas consecutivos reciben combinaciones distintas y, al dar la
+    vuelta, cada nivel de cada factor queda representado por igual.
+
+    Devuelve [(run_clima, nombre_pob, tasa_pob, nombre_area, mult_area), ...].
+    """
+    combos = list(itertools.product(POP_LEVELS.items(), AREA_LEVELS.items()))
+    paso = 5 if len(combos) % 5 else 7          # coprimo con len(combos)
+    out = []
+    for i in range(n_sow):
+        c = climate_runs[i % len(climate_runs)]
+        (pn, pv), (an, av) = combos[(i * paso) % len(combos)]
+        out.append((c, pn, pv, an, av))
+    return out
 
 
 def _normalize_col(surr, raw_series: np.ndarray, col_idx: int) -> np.ndarray:
@@ -155,8 +181,14 @@ def pick_climate_runs(n_climate: int = 5) -> list[int]:
 
 
 def build_scenarios(surrogate, feature_names: list[str], template: np.ndarray,
-                    n_climate: int = 5, corners: dict | None = None) -> tuple[list, list]:
-    corners = corners or DEMAND_CORNERS
+                    n_climate: int = 5, corners: dict | None = None,
+                    n_sow: int | None = None) -> tuple[list, list]:
+    """Ensamble de estados del mundo.
+
+    Por defecto usa el diseño BALANCEADO sobre clima × población × área
+    (config_weap.DPS_N_SOW). Pasando `corners` se recupera el comportamiento
+    antiguo (producto climas × corners), solo para reproducir corridas viejas.
+    """
     fi = {n: i for i, n in enumerate(feature_names)}
     Z = zarr.open_group(str(TRAIN_ZARR_PATH), mode="r")
     zfeat = list(Z.attrs["feature_names"]); zfi = {n: i for i, n in enumerate(zfeat)}
@@ -177,39 +209,44 @@ def build_scenarios(surrogate, feature_names: list[str], template: np.ndarray,
     precip = [f"Precipitation__{s}" for s in SUBCUENCAS]
     temp = [f"Temperature__{s}" for s in SUBCUENCAS]
 
+    if corners is not None:                      # modo heredado
+        sow = [(c, cn, pr, f"area{am:.2f}", am)
+               for c in climate_runs for cn, (pr, am) in corners.items()]
+    else:
+        sow = build_sow_design(climate_runs, n_sow or DPS_N_SOW)
+
     scenarios, labels = [], []
-    for c in climate_runs:
-        for cname, (prate, amult) in corners.items():
-            X = template.copy()
-            # --- clima: precip/temp del run c ---
-            for col in precip + temp:
-                if col in fi and col in zfi:
-                    X[:, fi[col]] = _normalize_col(surrogate, clim_raw[c][:T, zfi[col]], fi[col])
-            # --- precipitación ACUMULADA, derivada de la que se acaba de inyectar ---
-            # Sin esto quedaban con los valores del template: los 9 escenarios
-            # tenían PP_acum_52weeks = 140.4 (el del run 0) cuando en el zarr va
-            # de 140 a 274. El acuífero responde a estas escalas, no a la lluvia
-            # semanal, así que el clima NO entraba al modelo: el almacenamiento
-            # variaba 0.02% entre el clima más seco y el más húmedo, contra 8%
-            # en WEAP.
-            if PP_ACUM_SOURCE in zfi:
-                pp_raw = clim_raw[c][:T, zfi[PP_ACUM_SOURCE]]
-                for w in PP_ACUM_WINDOWS:
-                    col = f"PP_acum_{w}weeks"
-                    if col in fi:
-                        X[:, fi[col]] = _normalize_col(
-                            surrogate, _rolling_sum(pp_raw, w), fi[col])
-            # --- población (cap) y demanda potable: crecen con prate ---
-            for col in POP_COLUMNS:
-                if col in fi and col in zfi:
-                    X[:, fi[col]] = _normalize_col(surrogate, _grow_pop(base_raw[:T, zfi[col]], prate), fi[col])
-            for col in DEMAND_AP_COLUMNS:
-                if col in fi and col in zfi:
-                    X[:, fi[col]] = _normalize_col(surrogate, _scale_demand(base_raw[:T, zfi[col]], prate), fi[col])
-            # --- área de riego: multiplicador constante ---
-            for col in AREA_COLUMNS:
-                if col in fi and col in zfi:
-                    X[:, fi[col]] = _normalize_col(surrogate, base_raw[:T, zfi[col]] * amult, fi[col])
-            scenarios.append(X.astype(np.float32))
-            labels.append(f"clim{c}_{cname}(pop{prate:.0%},area{amult:.2f})")
+    for c, pname, prate, aname, amult in sow:
+        X = template.copy()
+        # --- clima: precip/temp del run c ---
+        for col in precip + temp:
+            if col in fi and col in zfi:
+                X[:, fi[col]] = _normalize_col(surrogate, clim_raw[c][:T, zfi[col]], fi[col])
+        # --- precipitación ACUMULADA, derivada de la que se acaba de inyectar ---
+        # Sin esto quedaban con los valores del template: los 9 escenarios
+        # tenían PP_acum_52weeks = 140.4 (el del run 0) cuando en el zarr va
+        # de 140 a 274. El acuífero responde a estas escalas, no a la lluvia
+        # semanal, así que el clima NO entraba al modelo: el almacenamiento
+        # variaba 0.02% entre el clima más seco y el más húmedo, contra 8%
+        # en WEAP.
+        if PP_ACUM_SOURCE in zfi:
+            pp_raw = clim_raw[c][:T, zfi[PP_ACUM_SOURCE]]
+            for w in PP_ACUM_WINDOWS:
+                col = f"PP_acum_{w}weeks"
+                if col in fi:
+                    X[:, fi[col]] = _normalize_col(
+                        surrogate, _rolling_sum(pp_raw, w), fi[col])
+        # --- población (cap) y demanda potable: crecen con prate ---
+        for col in POP_COLUMNS:
+            if col in fi and col in zfi:
+                X[:, fi[col]] = _normalize_col(surrogate, _grow_pop(base_raw[:T, zfi[col]], prate), fi[col])
+        for col in DEMAND_AP_COLUMNS:
+            if col in fi and col in zfi:
+                X[:, fi[col]] = _normalize_col(surrogate, _scale_demand(base_raw[:T, zfi[col]], prate), fi[col])
+        # --- área de riego: multiplicador constante ---
+        for col in AREA_COLUMNS:
+            if col in fi and col in zfi:
+                X[:, fi[col]] = _normalize_col(surrogate, base_raw[:T, zfi[col]] * amult, fi[col])
+        scenarios.append(X.astype(np.float32))
+        labels.append(f"clim{c}_pop{pname}_area{aname}")
     return scenarios, labels

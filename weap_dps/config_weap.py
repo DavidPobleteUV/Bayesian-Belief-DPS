@@ -265,6 +265,24 @@ DPS_CLIMATE_RUNS = [
     526,  # 216.5 mm/año  racha  7  sequía sev 0.72 dur 10
 ]
 
+# ─── Diseño de estados del mundo (SOW) ─────────────────────────────────────
+# Tres incertidumbres, las mismas del diseño experimental de WEAP:
+#   clima (DPS_CLIMATE_RUNS), crecimiento poblacional y cambio de uso de suelo.
+#
+# Antes eran 3 "corners" (HIGH/MID/LOW) que CONFUNDÍAN población y área: LOW
+# bajaba el crecimiento a 2% Y reducía el área a la mitad al mismo tiempo, así
+# que no se podía atribuir un efecto a un factor. Además el área solo tomaba dos
+# valores (1.00 y 0.50) de los seis que tiene el diseño de WEAP.
+#
+# Un factorial completo 9 climas x 3 poblaciones x 4 áreas son 108 escenarios
+# (226 h con 4000 evaluaciones). En su lugar se usa un diseño BALANCEADO: cada
+# clima se combina con demandas distintas, y cada nivel de cada factor aparece
+# el mismo número de veces. Con 27 escenarios —el mismo costo que antes— se
+# cubren las 12 combinaciones población x área.
+POP_LEVELS = {"2%": 0.02, "3%": 0.03, "5%": 0.05}       # los 3 del diseño WEAP
+AREA_LEVELS = {"-50%": 0.50, "-15%": 0.85, "0%": 1.00, "+20%": 1.20}
+DPS_N_SOW = 27      # 27 -> 56 h con 4000 evals | 36 -> 75 h (balance perfecto)
+
 # ─── Estado que observa la política del DPS ────────────────────────────────
 # Fuente unica de verdad para N. Antes el 4 estaba repetido en tres archivos
 # (pipe_problem, pipe_simulation) y desincronizarlos rompe el tamaño de P.
