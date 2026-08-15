@@ -19,7 +19,8 @@ import numpy as np
 import zarr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from weap_dps.config_weap import MODEL_REPO, WEEKS_PER_YEAR, TRAIN_ZARR_PATH
+from weap_dps.config_weap import (MODEL_REPO, WEEKS_PER_YEAR, TRAIN_ZARR_PATH,
+                                  DPS_CLIMATE_RUNS)
 from weap_dps.climate_sampler import SUBCUENCAS
 from weap_dps.demand_builder import POP_COLUMNS, AREA_COLUMNS, DEMAND_AP_COLUMNS
 
@@ -56,6 +57,23 @@ def _normalize_col(surr, raw_series: np.ndarray, col_idx: int) -> np.ndarray:
     return (tr - mean) / (std if std > 1e-12 else 1.0)
 
 
+# Ventanas de precipitación acumulada presentes como features del modelo.
+PP_ACUM_WINDOWS = (4, 12, 26, 52, 104)
+# Columna de la que se acumulan. Despejado por mínimos cuadrados sobre 5 runs:
+# PP_acum_N = suma móvil de N semanas de Precipitation__Subcuenca_Q01, con peso
+# exactamente 1.0 en Q01 y 0.0 en las otras cinco (error 0.000% en las cinco
+# ventanas). NO es el promedio de la cuenca: usar la media simple da 9% de error.
+PP_ACUM_SOURCE = "Precipitation__Subcuenca_Q01"
+
+
+def _rolling_sum(v: np.ndarray, n: int) -> np.ndarray:
+    """Suma de las últimas n semanas; al inicio, de las que haya (parcial)."""
+    c = np.cumsum(np.insert(v.astype(float), 0, 0.0))
+    out = c[1:].copy()                       # t < n: acumulado parcial
+    out[n:] = c[n + 1:] - c[1:-n]
+    return out
+
+
 def _grow_pop(base_series: np.ndarray, rate: float) -> np.ndarray:
     """pop[t] = base_year0 * (1+rate)^año (escalón anual)."""
     T = len(base_series); out = base_series.copy().astype(float)
@@ -90,7 +108,23 @@ def _scale_demand(base_series: np.ndarray, rate: float) -> np.ndarray:
 
 
 def pick_climate_runs(n_climate: int = 5) -> list[int]:
-    """N run_ids spread dry→wet por precipitación total (filtrando P=0)."""
+    """N run_ids del ensamble climático.
+
+    Prioridad:
+      1. DPS_CLIMATE_RUNS del config — lista curada explícitamente (ver allí el
+         porqué: la selección automática mezclaba proyecciones GCM con sequías
+         sintéticas extremas y repartía mal el rango).
+      2. subset_climate_runs guardado en el zarr reducido.
+      3. reparto automático seco→húmedo por precipitación total.
+    """
+    if DPS_CLIMATE_RUNS:
+        runs = [int(r) for r in DPS_CLIMATE_RUNS]
+        if n_climate >= len(runs):
+            return runs
+        # submuestreo uniforme conservando los extremos del rango
+        idx = np.linspace(0, len(runs) - 1, n_climate).astype(int)
+        return [runs[i] for i in idx]
+
     Z = zarr.open_group(str(TRAIN_ZARR_PATH), mode="r")
 
     # Si el zarr es un SUBCONJUNTO (build_train_subset.py), los climas ya vienen
@@ -131,6 +165,13 @@ def build_scenarios(surrogate, feature_names: list[str], template: np.ndarray,
     T = template.shape[0]
 
     climate_runs = pick_climate_runs(n_climate)
+    faltan = [c for c in climate_runs if c not in set(zr.tolist())]
+    if faltan:
+        raise RuntimeError(
+            f"Los runs climáticos {faltan} no están en {TRAIN_ZARR_PATH.name} "
+            f"(tiene {len(zr)} runs). Si es el subset reducido, regenéralo con "
+            f"`python weap_dps/build_train_subset.py` (necesita el zarr completo), "
+            f"o apunta al completo con $env:DPS_TRAIN_ZARR.")
     clim_raw = {c: Z["X"][int(np.where(zr == c)[0][0])] for c in climate_runs}
 
     precip = [f"Precipitation__{s}" for s in SUBCUENCAS]
@@ -144,6 +185,20 @@ def build_scenarios(surrogate, feature_names: list[str], template: np.ndarray,
             for col in precip + temp:
                 if col in fi and col in zfi:
                     X[:, fi[col]] = _normalize_col(surrogate, clim_raw[c][:T, zfi[col]], fi[col])
+            # --- precipitación ACUMULADA, derivada de la que se acaba de inyectar ---
+            # Sin esto quedaban con los valores del template: los 9 escenarios
+            # tenían PP_acum_52weeks = 140.4 (el del run 0) cuando en el zarr va
+            # de 140 a 274. El acuífero responde a estas escalas, no a la lluvia
+            # semanal, así que el clima NO entraba al modelo: el almacenamiento
+            # variaba 0.02% entre el clima más seco y el más húmedo, contra 8%
+            # en WEAP.
+            if PP_ACUM_SOURCE in zfi:
+                pp_raw = clim_raw[c][:T, zfi[PP_ACUM_SOURCE]]
+                for w in PP_ACUM_WINDOWS:
+                    col = f"PP_acum_{w}weeks"
+                    if col in fi:
+                        X[:, fi[col]] = _normalize_col(
+                            surrogate, _rolling_sum(pp_raw, w), fi[col])
             # --- población (cap) y demanda potable: crecen con prate ---
             for col in POP_COLUMNS:
                 if col in fi and col in zfi:

@@ -231,6 +231,40 @@ J5_FAILURE_THRESHOLD_FRAC = 0.10   # semana en falla si Unmet/Demand > 10%
 # UN pueblo fallara un poco para marcar la semana, y el conteo se saturaba.
 J51_THRESHOLD_FRAC = 0.10          # pueblo en falla esa semana si unmet/dem > 10%
 
+# ─── Ensamble climático del DPS ────────────────────────────────────────────
+# Lista EXPLÍCITA de runs climáticos. Si está vacía, scenario_builder los elige
+# solo, repartiendo por precipitación total acumulada.
+#
+# La selección automática tenía dos problemas:
+#   1. Reparte sobre el ORDEN de precipitación, no sobre su distribución, y como
+#      el extremo seco es un outlier el reparto queda torcido: los 5 climas
+#      caían en los percentiles 0, 24, 47, 58 y 91 (dos casi pegados, y el 9%
+#      más húmedo sin representar).
+#   2. Mezcla proyecciones GCM con sequías SINTÉTICAS sin distinguirlas. El
+#      ancla seca terminaba siendo una sequía de 30 años al 87% de severidad
+#      (22.8 mm/año), que no es un clima sino un test de estrés — y como la
+#      robustez es media + λ·std, ese escenario domina la desviación.
+#
+# Ensamble vigente: 9 climas, todos >= 110 mm/año.
+#   5 series GCM puras cubriendo 127-248 mm/año (son las UNICAS disponibles:
+#     5 modelos x 2 SSP, y solo 8 superan el piso)
+#   4 con sequía impuesta de duración 10 años -> secuencias seco/húmedo con
+#     recuperación, en vez de un desplazamiento permanente
+#
+# El run 555 (111 mm/año, racha de 21 años secos) queda FUERA a propósito: se
+# reserva para el test de robustez posterior sobre el frente ya obtenido.
+DPS_CLIMATE_RUNS = [
+    0,    # 126.7 mm/año  CV 52%  NESM3/ssp585        - el GCM más seco
+    45,   # 154.7 mm/año  CV 41%  NESM3/ssp245        - seco y estable
+    9,    # 204.1 mm/año  CV 56%  EC-Earth3-Veg/ssp585
+    27,   # 213.3 mm/año  CV 37%  MPI-ESM1-2-LR/ssp585 - la menor dispersión
+    54,   # 247.5 mm/año  CV 45%  ACCESS-CM2/ssp245   - el GCM más húmedo
+    779,  # 158.8 mm/año  racha 11  sequía sev 0.83 dur 10
+    693,  # 166.2 mm/año  racha 10  sequía sev 0.85 dur 10
+    882,  # 173.9 mm/año  racha  9  sequía sev 0.70 dur 10
+    526,  # 216.5 mm/año  racha  7  sequía sev 0.72 dur 10
+]
+
 # ─── Estado que observa la política del DPS ────────────────────────────────
 # Fuente unica de verdad para N. Antes el 4 estaba repetido en tres archivos
 # (pipe_problem, pipe_simulation) y desincronizarlos rompe el tamaño de P.

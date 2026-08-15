@@ -34,7 +34,8 @@ import numpy as np
 import zarr
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from weap_dps.config_weap import TRAIN_ZARR_PATH, DATA_DIR       # noqa: E402
+from weap_dps.config_weap import (TRAIN_ZARR_PATH, DATA_DIR,      # noqa: E402
+                                  DPS_CLIMATE_RUNS)
 from weap_dps.scenario_builder import SUBCUENCAS                  # noqa: E402
 
 
@@ -55,18 +56,28 @@ def main():
     rids = np.array(Z["run_ids"][:]).astype(int)
     print(f"         {len(rids)} runs | X{Z['X'].shape}")
 
-    # ── elegir los runs climáticos igual que pick_climate_runs ──
-    pcols = [feat.index(f"Precipitation__{s}") for s in SUBCUENCAS
-             if f"Precipitation__{s}" in feat]
-    val = np.where(rids >= 0)[0]
-    pp = Z["X"].oindex[:, :, pcols]
-    tot = np.nansum(pp[val], axis=(1, 2))
-    ok = tot > 0
-    val, tot = val[ok], tot[ok]
-    order = np.argsort(tot)
-    pick = np.linspace(0, len(order) - 1, args.n_climate).astype(int)
-    climate = [int(rids[val[order[p]]]) for p in pick]
-    print(f"climas : {climate}  (seco→húmedo por precipitación total)")
+    # ── runs climáticos ──
+    # Si hay lista curada en el config, es la que manda: la selección automática
+    # mezclaba proyecciones GCM con sequías sintéticas extremas (ver la nota en
+    # config_weap.DPS_CLIMATE_RUNS).
+    if DPS_CLIMATE_RUNS:
+        climate = [int(r) for r in DPS_CLIMATE_RUNS]
+        falta = [c for c in climate if c not in set(rids.tolist())]
+        if falta:
+            raise SystemExit(f"DPS_CLIMATE_RUNS pide runs ausentes del zarr: {falta}")
+        print(f"climas : {climate}  (lista curada de config_weap)")
+    else:
+        pcols = [feat.index(f"Precipitation__{s}") for s in SUBCUENCAS
+                 if f"Precipitation__{s}" in feat]
+        val = np.where(rids >= 0)[0]
+        pp = Z["X"].oindex[:, :, pcols]
+        tot = np.nansum(pp[val], axis=(1, 2))
+        ok = tot > 0
+        val, tot = val[ok], tot[ok]
+        order = np.argsort(tot)
+        pick = np.linspace(0, len(order) - 1, args.n_climate).astype(int)
+        climate = [int(rids[val[order[p]]]) for p in pick]
+        print(f"climas : {climate}  (seco→húmedo por precipitación total)")
 
     keep = sorted(set([args.baseline] + climate))
     slots = [int(np.where(rids == r)[0][0]) for r in keep]
