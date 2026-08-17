@@ -129,13 +129,19 @@ def main():
             f"Faltan los climas {faltan} en el zarr. Este análisis necesita el "
             f"zarr COMPLETO: pásalo con --zarr o $env:DPS_TRAIN_ZARR.")
 
-    # se reutiliza build_scenarios inyectando el diseño ampliado
+    # Se reutiliza build_scenarios inyectando el diseño ampliado. Hay que
+    # parchear TAMBIÉN pick_climate_runs: build_scenarios la usa internamente
+    # para cargar las series climáticas, y si devuelve solo las 9 de la
+    # optimización, los climas de estrés del diseño ampliado no existen.
     import weap_dps.scenario_builder as sb
-    orig = sb.build_sow_design
+    orig_sow, orig_pick = sb.build_sow_design, sb.pick_climate_runs
     sb.build_sow_design = lambda climate_runs, n: sow
-    scen, labels = build_scenarios(pipe.surrogate, pipe.feature_names,
-                                   pipe.X_template, n_climate=len(climas))
-    sb.build_sow_design = orig
+    sb.pick_climate_runs = lambda n_climate=5: climas
+    try:
+        scen, labels = build_scenarios(pipe.surrogate, pipe.feature_names,
+                                       pipe.X_template, n_climate=len(climas))
+    finally:
+        sb.build_sow_design, sb.pick_climate_runs = orig_sow, orig_pick
     print(f"ensamble de verificación: {len(scen)} SOWs sobre {len(climas)} climas "
           f"(la optimización usó 27 sobre 9)")
 
