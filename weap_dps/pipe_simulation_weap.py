@@ -223,23 +223,22 @@ class PipeWEAP:
             pi = 1.0 / (1.0 + np.exp(-raw))   # sigmoid → [0,1]
             actions = policy_output_to_actions(pi)
 
-            # Irreversibilidad: una obra construida sigue operando aunque la
-            # política la "apague". Solo aplica a ACTION_NAMES_INFRA; el
-            # acuerdo es administrativo y sí puede revertirse año a año.
+            # Construcción irreversible, OPERACIÓN reversible.
+            #
+            # `built` es monótono y solo sirve para dos cosas: alimentar las
+            # banderas built_* del estado (la política debe saber qué existe) y
+            # dejar constancia de que el CAPEX ya se pagó — el costeo lo cobra
+            # una sola vez, en la PRIMERA activación (_detect_first_activation_year).
+            #
+            # `act_k` NO se fuerza: significa "operar la obra k este año" y puede
+            # ir 1→0→1 libremente. Apagarla no devuelve la inversión, pero ahorra
+            # el OPEX. Es el caso de una infraestructura que queda ociosa si las
+            # condiciones mejoran o si un instrumento más barato la desplaza, y
+            # es justamente el tipo de adaptación que el DPS debe poder expresar.
+            #
+            # Forzar la operación (como se hizo en una versión anterior) recorta
+            # el espacio de políticas sin justificación física.
             built = update_built_state(built, actions)
-            for name, is_built in built.items():
-                if is_built and not actions.get(name, 0.0):
-                    actions[name] = 1.0
-                    q = _Q_BY_BINARY[name]
-                    actions[q] = CANONICAL_Q[q]
-
-            # Re-aplicar R1: el forzado de arriba puede revivir la costera un
-            # año después de que se construyó la completa, que la subsume.
-            # (built["costera"] se mantiene en 1: la obra existe y su CAPEX ya
-            # se pagó en su año de activación; solo deja de operar.)
-            if actions["act_desalacion_completa"] and actions["act_desalacion_costera"]:
-                actions["act_desalacion_costera"] = 0.0
-                actions["q_desalacion_costera"] = 0.0
             return actions
         return policy_fn
 
