@@ -24,8 +24,8 @@ param(
     [int]   $Population  = 100,
     [int]   $NClimate    = 5,
     [double]$Lambda      = 1.0,
-    [int[]] $Seeds       = @(42, 123, 456),
-    [string]$OutDir      = "runs_weap\robust_iter1_h128"
+    [int[]] $Seeds       = @(42, 123, 456, 789, 1010, 2020),
+    [string]$OutDir      = "runs_weap\robust_iter1_fix2050"
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,12 +36,15 @@ if (Test-Path "venv_DPS\Scripts\python.exe") { $py = "venv_DPS\Scripts\python.ex
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 
 # --- Chequeos previos (fallar aqui es barato; a las 20 h no) ---
+# train_subset.zarr NO va en esta lista: es un atajo opcional para correr sin el
+# repo del modelo, y _resolve_train_zarr() cae al zarr completo si no existe. Un
+# subset viejo es PEOR que ninguno, porque tiene precedencia sobre el zarr
+# completo y el DPS lo usaria en silencio con el dataset equivocado.
 $need = @("data_weap\best_model.ckpt",
           "data_weap\X_template.npz",
           "data_weap\scalers_weap.npz",
           "data_weap\transform_params_weap.npz",
-          "data_weap\manifest_inputs.csv",
-          "data_weap\train_subset.zarr")
+          "data_weap\manifest_inputs.csv")
 foreach ($f in $need) {
     if (-not (Test-Path $f)) {
         throw "Falta $f . Copia los artefactos del modelo desde la PC de entrenamiento."
@@ -73,7 +76,15 @@ $env:KMP_DUPLICATE_LIB_OK = "TRUE"
 $env:PYTHONIOENCODING = "utf-8"
 $env:PYTHONUNBUFFERED = "1"     # sin esto Python bufferea al redirigir a archivo
                                 # y los logs (y check_progress) van muy atrasados
-$env:DPS_WATERFALL = "0"        # cascada determinista OFF (probada: empeora J4)
+# Cascada de despacho ON. El "empeora J4" del comentario anterior se midio con
+# el emulador sin corregir y con el acuerdo excluido de la cascada (sus enlaces
+# quedaban en cero, de modo que la accion no aportaba agua y solo costaba valor
+# agricola). Hoy el orden se deriva de las tarifas y el acuerdo participa con su
+# tope de 25 L/s. Ademas la cascada NUNCA llego a correr: leia su registro de un
+# zarr vacio y reventaba al construirse.
+$env:DPS_WATERFALL = "1"
+$env:DPS_TORCH_THREADS = "1"    # medido: 381 us/paso con 1 hilo vs 454 con 6,
+                                # y 1 nucleo por semilla en vez de 5.9
 
 # El numero de escenarios lo fija DPS_N_SOW (diseno balanceado clima x poblacion
 # x area), no NClimate*3 como cuando eran 3 corners fijos. Si se calcula mal, el
@@ -81,11 +92,11 @@ $env:DPS_WATERFALL = "0"        # cascada determinista OFF (probada: empeora J4)
 $nScen = & $py -c "import sys; sys.path.insert(0,'.'); from weap_dps.config_weap import DPS_N_SOW; print(DPS_N_SOW)"
 if ($LASTEXITCODE -ne 0 -or -not $nScen) { $nScen = $NClimate * 3 }
 $nScen = [int]$nScen
-# 1.92 s por rollout de escenario, MEDIDO con iter1_clean_h256 (28.8 s por
-# evaluacion de 15 escenarios) tanto en el servidor como en la PC de trabajo.
-# El valor anterior (1.18) venia de medir h128 con UN escenario y subestimaba
-# el ETA a la mitad.
-$eta   = [math]::Round($Evaluations * 1.92 * $nScen / 3600, 1)
+# 1.46 s por rollout de escenario, MEDIDO con iter1_fix2050_h256 y la cascada
+# activa: 39.5 s por evaluacion de 27 escenarios, con 1 hilo de torch. El valor
+# anterior (1.92) se midio con 6 hilos, que ademas de ser mas lento por paso
+# hacia que las semillas en paralelo se pelearan por CPU.
+$eta   = [math]::Round($Evaluations * 1.46 * $nScen / 3600, 1)
 $seedList = $Seeds -join ", "
 $modelo = Split-Path $OutDir -Leaf     # el nombre estaba fijo como "h128"
 
