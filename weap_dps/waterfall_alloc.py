@@ -8,15 +8,17 @@ WELL flow, then fill each town's residual demand by price priority
 
     well(native) -> aduccion -> pozo-costero -> desal -> camiones -> (unmet)
 
-Desal/pozo-costero are gated by the action flags (action active over the horizon).
-Acuerdo is NOT a fallback here (uncapped it would swallow the residual and zero out
-trucks); the variant routes the residual to Camiones instead, consistent with the
-offline waterfall. Aduccion/PozoCostero use their physical caps; desal/trucks fill
-the remaining gap.
+Desal, pozo-costero y acuerdo se condicionan a sus banderas de acción (activa en
+algún punto del horizonte). Cada fuente respeta su tope físico: aducción 2 L/s,
+pozo costero 120 L/s, acuerdo 25 L/s por localidad; desalación y camiones cubren
+el resto sin tope efectivo.
 
-The cascade overwrites, per town, the Aduccion / PozoCostero / Desal / Camiones
-transmission-link columns of `surf_denorm` (and zeros Acuerdo). `cost_calculator`
-then runs unchanged on the modified array, so J4 reflects the waterfall allocation.
+El orden ya no está fijo: lo deriva `merit_order()` de las tarifas unitarias, las
+mismas con que `cost_calculator` factura (ver esa función).
+
+La cascada sobrescribe, por localidad, las columnas de enlace de transmisión de
+`surf_denorm`. `cost_calculator` corre después sin cambios sobre el arreglo
+modificado, de modo que J4 refleja la asignación de la cascada.
 """
 from __future__ import annotations
 
@@ -27,14 +29,58 @@ import numpy as np
 import pandas as pd
 import zarr
 
-from weap_dps.config_weap import MODEL_REPO, TOWN_SOURCE_COST_CSV
+from weap_dps.config_weap import (TOWN_SOURCE_COST_CSV, TRAIN_ZARR_PATH,
+                                  UNIT_COST_BY_SOURCE)
 
 SEC = 604800.0      # s per week
 LPS = 604.8         # 1 L/s expressed in m3/week-ish factor used offline (m3/s*SEC)
 # physical caps (L/s) -> m3/week via *LPS; desal/camiones effectively uncapped
-CAP_LPS = {"Aduccion": 2.0, "PozoCostero": 120.0, "Desal": 1e9, "Camiones": 1e9}
-PRIORITY = ["Aduccion", "PozoCostero", "Desal", "Camiones"]   # after well; Acuerdo excluded
+# Topes físicos (L/s) -> m3/semana vía *LPS. Desal y camiones van sin tope
+# efectivo. El acuerdo tiene 25 L/s POR LOCALIDAD (§2.2 de la metodología): son
+# arreglos bilaterales, no una tubería compartida.
+CAP_LPS = {"Aduccion": 2.0, "PozoCostero": 120.0, "Desal": 1e9,
+           "Acuerdo": 25.0, "Camiones": 1e9}
 DEMAND_EFFICIENCY = 0.70   # gross need = demand / 0.70 (matches offline)
+
+# Fuentes que participan de la cascada.
+#
+# El acuerdo estuvo excluido, y se le ponían los enlaces en cero, porque SIN TOPE
+# absorbía todo el residuo y anulaba los camiones aljibe —que son la fuente de
+# última instancia y la señal de estrés del sistema—. Pero el acuerdo sí tiene
+# tope: 25 L/s por localidad. Excluirlo lo dejaba estrictamente dominado: seguía
+# costando valor agrícola (el emulador responde a su bandera) sin aportar agua
+# urbana ni reducir el costo, de modo que ninguna política racional lo activaba y
+# el catálogo quedaba reducido de cuatro acciones a tres. Con su capacidad real
+# entra en la cascada como cualquier otra fuente.
+CASCADE_SOURCES = ("Aduccion", "PozoCostero", "Desal", "Acuerdo", "Camiones")
+
+
+def merit_order(unit_costs: dict | None = None,
+                sources: tuple[str, ...] = CASCADE_SOURCES) -> list[str]:
+    """Orden de despacho por costo unitario CRECIENTE.
+
+    El orden se DERIVA de los precios en vez de fijarse, porque son parámetros
+    del análisis: al barrer tarifas para mapear vulnerabilidad, un orden fijo
+    seguiría despachando según el mérito antiguo y simularía un despacho que
+    ningún operador elegiría —por ejemplo, seguir aduciendo cuando la desalación
+    pasó a ser más barata—. Además garantiza que el despacho y `cost_calculator`
+    usen los MISMOS precios: si divergen, el DPS optimiza contra un sistema
+    incoherente consigo mismo.
+
+    Con las tarifas por omisión el resultado es
+    ``["Aduccion", "PozoCostero", "Desal", "Camiones"]``, que es el orden que
+    antes estaba escrito a mano; el cambio no altera los resultados vigentes.
+    """
+    costs = dict(UNIT_COST_BY_SOURCE if unit_costs is None else unit_costs)
+    faltan = [s for s in sources if s not in costs]
+    if faltan:
+        raise ValueError(f"Sin costo unitario para {faltan}: no se puede ordenar "
+                         f"el despacho. Disponibles: {sorted(costs)}")
+    return sorted(sources, key=lambda s: float(costs[s]))
+
+
+# Orden por omisión, para compatibilidad con quien importe el símbolo.
+PRIORITY = merit_order()
 
 
 def _build_registry(Z, cost):
@@ -81,10 +127,17 @@ def _build_registry(Z, cost):
 class WaterfallAllocator:
     """Builds the town->link mapping once; applies the cascade per scenario."""
 
-    def __init__(self, surrogate, feature_names, target_names_surf):
+    def __init__(self, surrogate, feature_names, target_names_surf,
+                 unit_costs: dict | None = None):
         self.surr = surrogate
-        zarr_path = Path(MODEL_REPO) / "data" / "weap_weekly.zarr"
-        Z = zarr.open_group(str(zarr_path), mode="r")
+        # El registro town->links se lee del MISMO zarr de entrenamiento que usa
+        # el resto del DPS. Antes apuntaba a data/weap_weekly.zarr (layout
+        # antiguo de 773 runs), que podía tener otro conjunto de enlaces que el
+        # dataset con el que se entrenó el modelo en uso.
+        Z = zarr.open_group(str(TRAIN_ZARR_PATH), mode="r")
+        # Orden de despacho derivado de las tarifas vigentes (ver merit_order).
+        self.priority = merit_order(unit_costs)
+        self.unit_costs = dict(UNIT_COST_BY_SOURCE if unit_costs is None else unit_costs)
         cost = pd.read_csv(TOWN_SOURCE_COST_CSV)
         reg = _build_registry(Z, cost)
 
@@ -115,6 +168,7 @@ class WaterfallAllocator:
         self.q_desal_cols = [feat_idx[c] for c in
                              ["q_desalacion_costera", "q_desalacion_completa"] if c in feat_idx]
         self.q_pozo_col = feat_idx.get("q_nuevo_pozo_a_5km")
+        self.q_acuerdo_col = feat_idx.get("q_acuerdo")
 
     # ── inverse X transform for the demand column ──
     def _denorm_x(self, x_norm: np.ndarray, col: int) -> np.ndarray:
@@ -140,14 +194,16 @@ class WaterfallAllocator:
         # global action gates (step functions -> active if ever >0 over horizon)
         desal_on = any(np.nanmax(X_used[:, c]) > 0 for c in self.q_desal_cols)
         pozo_on = (self.q_pozo_col is not None and np.nanmax(X_used[:, self.q_pozo_col]) > 0)
-        gates = {"Desal": desal_on, "PozoCostero": pozo_on}
+        acuerdo_on = (self.q_acuerdo_col is not None
+                      and np.nanmax(X_used[:, self.q_acuerdo_col]) > 0)
+        gates = {"Desal": desal_on, "PozoCostero": pozo_on, "Acuerdo": acuerdo_on}
 
         for town, R in self.towns.items():
             demand_raw = self._denorm_x(X_used[:, R["dcol"]], R["dcol"])   # m3/s
             need = np.maximum(demand_raw, 0.0) * SEC / DEMAND_EFFICIENCY    # m3/week
             well = np.maximum(out[:, R["well_col"]], 0.0)
             rem = np.maximum(need - well, 0.0)
-            for st in PRIORITY:
+            for st in self.priority:
                 if st not in R["cols"]:
                     continue
                 if gates.get(st, True):
@@ -157,7 +213,4 @@ class WaterfallAllocator:
                     f = np.zeros(Tn)
                 out[:, R["cols"][st]] = f
                 rem = rem - f
-            # Acuerdo excluded from the cascade -> zero it so it isn't double-counted
-            if "Acuerdo" in R["cols"]:
-                out[:, R["cols"]["Acuerdo"]] = 0.0
         return out

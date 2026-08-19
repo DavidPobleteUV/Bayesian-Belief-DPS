@@ -38,3 +38,15 @@ data_weap/*.ckpt
 
 # Subconjunto del zarr de entrenamiento (se genera con build_train_subset.py)
 data_weap/train_subset.zarr/
+
+# Salidas de corridas: frentes, logs y pruebas de humo. Los .dat historicos ya
+# versionados se conservan; lo nuevo pesa demasiado (test_h256 solo son 99 MB).
+results/robust_iter*/
+results/robustez_iter*/
+results/test_h256/
+results/_smoke_*.dat
+logs_smoke_*.log
+
+# Respaldo de los artefactos del emulador anterior (checkpoint, scalers,
+# train_subset). Son binarios y el modelo vigente ya esta ignorado mas arriba.
+data_weap/_antiguo_iter1_sincorregir/

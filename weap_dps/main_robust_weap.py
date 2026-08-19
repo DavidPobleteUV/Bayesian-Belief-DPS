@@ -11,9 +11,27 @@ ni pipe_simulation_weap.py.
       --n_climate 5 --lam 1.0 --output runs_weap/robust/pareto_v3_seed42.dat
 """
 from __future__ import annotations
-import argparse, logging, pickle, sys, time
+import argparse, logging, os, pickle, sys, time
 from pathlib import Path
 import numpy as np
+
+# ── Hilos de torch: 1 por proceso ────────────────────────────────────────────
+# El rollout evalúa el MLP paso a paso con lote de tamaño 1, y para matrices tan
+# pequeñas coordinar hilos cuesta más de lo que rinde. Medido sobre este modelo:
+#
+#   1 hilo  -> 381 us/paso  (usa ~1 nucleo)
+#   2 hilos -> 373 us/paso
+#   6 hilos -> 454 us/paso  (usa ~5.9 nucleos)
+#
+# Con 6 hilos cada semilla acaparaba casi 6 de los 12 nucleos, de modo que
+# lanzar 6 semillas en paralelo las hacia pelear por CPU (sobresuscripcion ~3x).
+# Con 1 hilo cada semilla es ademas 16% mas rapida y las 6 caben holgadas.
+# Debe fijarse ANTES de importar torch para que tome efecto.
+_TH = os.environ.get("DPS_TORCH_THREADS", "1")
+os.environ.setdefault("OMP_NUM_THREADS", _TH)
+os.environ.setdefault("MKL_NUM_THREADS", _TH)
+import torch
+torch.set_num_threads(int(_TH))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from platypus import NSGAII

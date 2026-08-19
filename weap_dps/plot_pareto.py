@@ -67,7 +67,9 @@ OBJECTIVES = [
 # ─── Conversiones de unidades raw → display ──────────────────────────────
 # Constantes para conversion en load_pareto_dat. El raw .dat queda intacto;
 # solo afecta lo que se ve en los plots.
-USD_CLP_RATE_DISPLAY = 950.0       # CLP/USD
+# Se importa la constante canónica en vez de repetir el valor: tenerla duplicada
+# hacía que los gráficos pudieran quedar en otro tipo de cambio que el reporte.
+from weap_dps.config_weap import USD_CLP_RATE as USD_CLP_RATE_DISPLAY  # noqa: E402
 N_YEARS_DECISION     = 23          # años del horizonte de decisión
 HORIZON_SECONDS      = N_YEARS_DECISION * 52 * 604800   # = ~7.24e8 s
 

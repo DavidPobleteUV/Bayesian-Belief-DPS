@@ -18,11 +18,25 @@ DATA_DIR     = PROJECT_ROOT / "data_weap"
 # de modelo (v2/v3) sin tocar el default. Default = best_model.ckpt.
 CKPT_PATH    = Path(os.environ["DPS_CKPT"]) if os.environ.get("DPS_CKPT") else DATA_DIR / "best_model.ckpt"
 
-# Flag .3: si DPS_WATERFALL=1, J4 usa la cascada determinista well-anclada
-# (well nativo -> aduccion -> pozo-costero -> desal -> camiones) para derivar
-# desal/camiones como déficit con prioridad de precio, en vez de las predicciones
-# nativas del modelo. Ver weap_dps/waterfall_alloc.py.
-DPS_WATERFALL = os.environ.get("DPS_WATERFALL", "0") == "1"
+# Cascada de despacho: J4 usa la asignación determinista anclada en el pozo
+# propio (pozo nativo -> resto de fuentes por ORDEN DE MÉRITO) en vez del reparto
+# nativo del emulador. El orden ya no está escrito a mano: lo deriva
+# waterfall_alloc.merit_order() de UNIT_COST_BY_SOURCE, las mismas tarifas con
+# que cost_calculator factura, de modo que despacho y costo no puedan divergir.
+#
+# ON por omisión desde iter1-fix2050. Antes estaba en 0 y además el allocator
+# leía su registro de un zarr vacío, así que la cascada nunca llegó a correr:
+# el reparto entre fuentes venía del emulador —es decir, de las preferencias de
+# WEAP— y no respondía a los costos. Con la cascada activa, barrer tarifas sí
+# mueve el reparto físico, que es lo que permite mapear vulnerabilidad.
+#
+# Supuesto de modelación asociado: se representa un operador que despacha por
+# costo. Las políticas del frente que se re-simulen en WEAP deben configurarse
+# con estas MISMAS tarifas y el mismo orden de preferencia entre fuentes; si no,
+# emulador y modelo de referencia resuelven asignaciones distintas y la
+# verificación mide esa diferencia en vez del error del emulador.
+# DPS_WATERFALL=0 la apaga para reproducir corridas anteriores.
+DPS_WATERFALL = os.environ.get("DPS_WATERFALL", "1") == "1"
 
 # Correccion de balance: impone S + U = k*D, la identidad que WEAP cumple con
 # CV 2.6% y el surrogate no (cierra 16% abajo y con 5x mas dispersion).
@@ -53,9 +67,14 @@ def _resolve_train_zarr() -> Path:
     if local.exists():
         return local
     # 2) dataset completo, si está disponible en el repo del modelo
-    for rel in ("data/_v3_900_clean/weap_weekly_merged.zarr",   # iter1 (900 runs, limpio)
-                "data/_v3_900/weap_weekly_merged.zarr",         # iter0 (900 runs)
-                "data/weap_weekly.zarr"):                       # layout antiguo (773)
+    # OJO: el orden importa. _v3_900_fix2050 es el único dataset cuyo X coincide
+    # con lo que el modelo entregó: en los anteriores, las acciones figuran
+    # activas después de 2050 mientras no entregan agua. Mezclar el checkpoint
+    # actual con un zarr anterior también desalinea los scalers.
+    for rel in ("data/_v3_900_fix2050/weap_weekly_merged.zarr",  # iter1 corregido
+                "data/_v3_900_clean/weap_weekly_merged.zarr",    # iter1 sin corregir
+                "data/_v3_900/weap_weekly_merged.zarr",          # iter0 (900 runs)
+                "data/weap_weekly.zarr"):                        # layout antiguo (773)
         p = MODEL_REPO / rel
         if p.exists():
             return p
@@ -192,7 +211,11 @@ BASE_YEAR           = 2027          # t = 0 = primera decisión DPS (2027-04, ve
 # Si cambias DECISION_YEARS, cambia esto también o J4 anualizará un período
 # distinto al simulado.
 ANALYSIS_HORIZON_Y  = 33            # años-agua de análisis (2027-2060)
-USD_CLP_RATE        = 950.0         # tipo de cambio para display USD/CLP
+# Tipo de cambio para PRESENTACIÓN. Los objetivos se calculan y se optimizan en
+# CLP; esta constante solo convierte para mostrar. Cambiarla no altera el frente,
+# solo las unidades del reporte. Es la ÚNICA definición: no duplicarla en los
+# módulos de gráficos.
+USD_CLP_RATE        = 980.0         # CLP por USD
 
 # CAPEX + parámetros temporales por acción nueva.
 # Camiones, Aduccion, baseline Desal, baseline PozoCostero, baseline Pozos
@@ -349,17 +372,27 @@ N_OBJECTIVES = len(OBJ_OPT_IDX)
 # que ya elimina la mayor parte del sesgo restaurando S + U = k·D. Aplicar la
 # tabla antigua encima sería corregir dos veces.
 #
-#   solo calibración (h256)          : sesgo 0.748 -> error 10.8%
-#   balance + calibración residual   : sesgo 0.946 -> error  7.6%
+# Medido sobre el emulador iter1_fix2050 (época 57), 113 runs de test:
 #
-# Los factores quedan cerca de 1 justamente porque el trabajo lo hace ahora la
-# corrección física sobre el suministro, no un factor empírico sobre el costo.
-# Si se apaga DPS_BALANCE hay que volver a {0:1.146, 1:1.342, 2:1.409, 3:1.683}.
+#   sin corrección de balance        : sesgo 0.913 -> error 8.9%
+#   con corrección de balance        : sesgo 1.005 -> error 4.4%
+#
+# La tabla residual quedó PLANA. En el emulador anterior el factor crecía
+# monótonamente con el número de acciones —{0:1.008, 1:1.081, 2:1.063, 3:1.193},
+# hasta 19% de subestimación con tres o más— y esa deriva era el corte en 2050:
+# a más acciones activas, más semanas en que X decía "activa" mientras Y no
+# entregaba agua. Corregido el dato, los cuatro factores caen dentro del ±2.7%
+# de la unidad y la calibración empírica deja de hacer trabajo.
+#
+# Se conserva la tabla, con los valores nuevos, para no cambiar la interfaz;
+# aplicar la ANTIGUA sobre este emulador introduciría un sesgo artificial de
+# hasta +19% en el costo de las políticas con más obras, es decir, penalizaría
+# construir — justo la decisión central del problema.
 #
 # Las tarifas usadas son las de UNIT_COST_BY_SOURCE; si esas cambian hay que
 # recalcular (la mezcla de fuentes difiere entre observado y predicho, así que
 # las tarifas NO se cancelan en el cociente).
-J4_CAL_BY_NACTIONS = {0: 1.008, 1: 1.081, 2: 1.063, 3: 1.193}   # 3 = "3 o más"
+J4_CAL_BY_NACTIONS = {0: 0.973, 1: 0.998, 2: 0.994, 3: 1.006}   # 3 = "3 o más"
 
 # Compat / override manual: si DPS_J4_CAL está seteado se usa ESE escalar para
 # todos los casos (ignora la tabla). Útil para reproducir corridas antiguas.

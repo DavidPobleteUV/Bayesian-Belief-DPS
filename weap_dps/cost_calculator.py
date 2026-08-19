@@ -256,8 +256,8 @@ def j3_agricultural_value(surf_denorm: np.ndarray,
     # EAC para display/log (no afecta optimización)
     crf = _annuity_factor(r, ANALYSIS_HORIZON_Y)
     eac = npv * crf
-    logger.info("J3 — Valor agrícola NPV (r=%.0f%%): %.3e CLP   (EAC = %.3e CLP/año, %.2f MUSD/año)",
-                r * 100, npv, eac, eac / USD_CLP_RATE / 1e6)
+    logger.info("J3 — Valor agrícola NPV (r=%.0f%%): %.2f MUSD   (EAC = %.2f MUSD/año)",
+                r * 100, npv / USD_CLP_RATE / 1e6, eac / USD_CLP_RATE / 1e6)
     return npv
 
 
@@ -446,33 +446,37 @@ def j4_supply_cost(
     # ── Reporte ────────────────────────────────────────────────────────
     logger.info("J4 — Costo anualizado (descuento r=%.0f%%, base year=%d, N=%d años):",
                 r * 100, BASE_YEAR, ANALYSIS_HORIZON_Y)
+    # El reporte va en millones de USD. El cálculo y la optimización siguen en
+    # CLP: esto es solo presentación (USD_CLP_RATE, config_weap).
+    musd = lambda x: x / USD_CLP_RATE / 1e6      # noqa: E731
     logger.info("")
-    logger.info("    OPEX desglose por fuente (NPV en CLP):")
+    logger.info("    OPEX desglose por fuente (NPV, millones de USD a %.0f CLP/USD):",
+                USD_CLP_RATE)
     logger.info("    %-16s  %-14s  %-9s  %s",
-                "Fuente", "NPV CLP", "% OPEX", "n_links")
+                "Fuente", "NPV MUSD", "% OPEX", "n_links")
     logger.info("    %s", "-" * 60)
     npv_opex_for_pct = npv_opex_total if npv_opex_total > 0 else 1.0
     for k, v in sorted(npv_opex_by_type.items(), key=lambda kv: -kv[1]):
         pct = 100.0 * v / npv_opex_for_pct
-        logger.info("    %-16s  %.3e     %5.1f%%     %d",
-                    k, v, pct, n_links[k])
+        logger.info("    %-16s  %12.2f     %5.1f%%     %d",
+                    k, musd(v), pct, n_links[k])
     logger.info("    %s", "-" * 60)
-    logger.info("    %-16s  %.3e", "NPV OPEX", npv_opex_total)
+    logger.info("    %-16s  %12.2f MUSD", "NPV OPEX", musd(npv_opex_total))
     logger.info("")
     if capex_events:
         logger.info("    CAPEX events (cada acción activada):")
         for e in capex_events:
-            logger.info("      %s  →  activa en %d, CAPEX pagado en %d (raw=%.2eM CLP, NPV=%.2eM CLP)",
+            logger.info("      %s  →  activa en %d, CAPEX pagado en %d "
+                        "(raw=%.1f MUSD, NPV=%.1f MUSD)",
                         e["action"], e["activation_year_calendar"],
                         e["capex_year_calendar"],
-                        e["capex_clp_raw"] / 1e6, e["capex_clp_npv"] / 1e6)
-        logger.info("    %-16s  %.3e", "NPV CAPEX", npv_capex_total)
+                        musd(e["capex_clp_raw"]), musd(e["capex_clp_npv"]))
+        logger.info("    %-16s  %12.2f MUSD", "NPV CAPEX", musd(npv_capex_total))
     else:
         logger.info("    CAPEX events: 0 (ninguna acción nueva activada o todas con CAPEX=0)")
     logger.info("")
-    logger.info("    %-16s  %.3e CLP", "NPV TOTAL", npv_total)
-    logger.info("    %-16s  %.3e CLP/año  (= %.2f MUSD/año a %.0f CLP/USD)",
-                "EAC", eac_total, eac_total / USD_CLP_RATE / 1e6, USD_CLP_RATE)
+    logger.info("    %-16s  %12.2f MUSD", "NPV TOTAL", musd(npv_total))
+    logger.info("    %-16s  %12.2f MUSD/año", "EAC", musd(eac_total))
 
     if n_links["unknown"]:
         logger.info("    unknown links no clasificados = %d", n_links["unknown"])

@@ -24,6 +24,48 @@ This repository contains the research code for the Bayesian-Belief Direct Policy
 Este repo es la **etapa de optimización** (derecha del diagrama, `weap_dps/`): consume el
 checkpoint del surrogate y produce el frente de Pareto cuyas propuestas vuelven a WEAP.
 
+## Estado (agosto 2026)
+
+**Artefactos apuntando al emulador corregido.** `data_weap/` contiene el checkpoint
+`iter1_fix2050` (época 57), sus scalers y sus parámetros de transformada; los anteriores quedaron
+en `data_weap/_antiguo_iter1_sincorregir/`. Entre ellos estaba `train_subset.zarr`, que **tenía
+precedencia sobre el zarr completo** en `_resolve_train_zarr()` y venía del dataset sin corregir:
+el DPS lo habría usado en silencio. Los `x_mean` viejo y nuevo difieren hasta 0,075, de modo que
+mezclar checkpoint y scalers de distintas iteraciones desalinea las entradas.
+
+**Calibración residual de J4 plana.** Con el emulador corregido,
+`J4_CAL_BY_NACTIONS = {0: 0.973, 1: 0.998, 2: 0.994, 3: 1.006}`. Antes crecía monótonamente con
+el número de acciones —hasta 1,193 con tres o más— y esa deriva era el corte en 2050: a más
+acciones activas, más semanas en que X las declaraba operando mientras Y no entregaba agua.
+Aplicar la tabla antigua sobre este emulador penalizaría construir hasta en un 19 %.
+
+**Cascada de despacho activa** (`DPS_WATERFALL=1` por omisión). El emulador reproduce el reparto
+entre fuentes de WEAP, que responde a preferencias fijas y no a los costos; la cascada lo
+sustituye por un despacho por **orden de mérito derivado de las tarifas**
+(`waterfall_alloc.merit_order()`), las mismas con que `cost_calculator` factura. Dos correcciones
+la hicieron utilizable:
+
+- leía su registro de un zarr vacío, así que **nunca llegó a ejecutarse**: ahora usa
+  `TRAIN_ZARR_PATH`;
+- el **acuerdo de reasignación** estaba excluido y con sus enlaces en cero, lo que lo dejaba
+  estrictamente dominado —costaba valor agrícola sin aportar agua urbana— y reducía el catálogo
+  de cuatro acciones a tres. Ahora participa con su tope real de 25 L/s por localidad.
+
+Es un **supuesto de modelación**: representa un operador que despacha por costo, mientras el
+modelo de referencia despacha por prioridades fijas. Las políticas del frente que se re-simulen en
+WEAP deben configurarse con las mismas tarifas y el mismo orden de preferencia.
+
+**Rendimiento: un hilo de torch por proceso.** El rollout evalúa el MLP paso a paso con lote de
+tamaño 1, y para matrices tan pequeñas coordinar hilos cuesta más de lo que rinde: 1 hilo son
+381 µs/paso contra 454 µs con 6, y además usa 1 núcleo en vez de 5,9. Con 6 hilos cada semilla
+acaparaba casi seis de los doce núcleos y las corridas en paralelo se peleaban por CPU. Medido en
+corrida real: **39,5 s/evaluación con 1 núcleo**, contra 47,6 s con 5,9. Seis semillas × 4.000
+evaluaciones caben en ~44 h sin contención. Configurable con `DPS_TORCH_THREADS`.
+
+**Costos en MUSD.** El reporte muestra millones de USD a 980 CLP/USD (`USD_CLP_RATE`, definido una
+sola vez y compartido con los gráficos). El cálculo y la optimización siguen en CLP: el tipo de
+cambio solo afecta la presentación.
+
 ## Repository structure
 
 - `main_par.py`: Entry point that launches multi-seed optimizations for both Bayesian-Belief DPS and StandardDPS configurations and writes pickled result bundles to `results/`.

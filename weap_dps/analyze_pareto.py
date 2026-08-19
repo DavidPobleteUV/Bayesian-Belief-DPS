@@ -189,44 +189,76 @@ def main():
 
 
 def _figure(P, spec, owner, seeds, out: Path):
+    """Coordenadas paralelas con lo DESEABLE siempre arriba.
+
+    Cada objetivo se muestra en sus unidades naturales (J1 y J3 vienen negados
+    en el .dat porque NSGA minimiza todo; el signo se revierte para mostrarlos).
+    La normalizacion se orienta por objetivo, de modo que el borde superior es
+    siempre el mejor valor alcanzado en el frente y el inferior el peor —
+    independientemente de si el objetivo se maximiza o se minimiza.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     V = np.column_stack([P[:, i] * sg for i, (_, sg) in enumerate(spec)])
     labels = [n for n, _ in spec]
+    # sg = -1 -> el objetivo venia negado -> en unidades naturales MAS es mejor
+    mas_es_mejor = [sg < 0 for _, sg in spec]
     mn, mx = V.min(0), V.max(0)
-    Vn = (V - mn) / np.where(mx - mn > 0, mx - mn, 1)
-    lab0 = [n for n, _ in spec]
-    ci = lab0.index("Costo J4") if "Costo J4" in lab0 else 0
+    rng = np.where(mx - mn > 0, mx - mn, 1.0)
+
+    Vn = np.empty_like(V)
+    mejor, peor = np.empty(len(labels)), np.empty(len(labels))
+    for k in range(len(labels)):
+        if mas_es_mejor[k]:
+            Vn[:, k] = (V[:, k] - mn[k]) / rng[k]      # max arriba
+            mejor[k], peor[k] = mx[k], mn[k]
+        else:
+            Vn[:, k] = (mx[k] - V[:, k]) / rng[k]      # min arriba
+            mejor[k], peor[k] = mn[k], mx[k]
+
+    ci = labels.index("Costo J4") if "Costo J4" in labels else 0
 
     fig, (ax, ax2) = plt.subplots(2, 1, figsize=(14, 10),
-                                  gridspec_kw={"height_ratios": [1.2, 1]})
-    fig.subplots_adjust(hspace=0.45)
+                                  gridspec_kw={"height_ratios": [1.25, 1]})
+    fig.subplots_adjust(hspace=0.5)
+
     cost = V[:, ci]
     norm = plt.Normalize(cost.min(), cost.max())
-    for i in np.argsort(-cost):
-        ax.plot(range(len(labels)), Vn[i], color=plt.cm.viridis(norm(cost[i])),
+    for i in np.argsort(-cost):                        # las caras al fondo
+        ax.plot(range(len(labels)), Vn[i], color=plt.cm.viridis_r(norm(cost[i])),
                 alpha=0.35, lw=1.0)
+
     ax.set_xticks(range(len(labels)))
-    ax.set_xticklabels(labels, fontsize=9)
-    ax.set_ylabel("normalizado (0 = mejor del frente)")
+    ax.set_xticklabels([n + ("\n(maximizar)" if b else "\n(minimizar)")
+                        for n, b in zip(labels, mas_es_mejor)], fontsize=9)
+    ax.set_yticks([0, 1])
+    ax.set_yticklabels(["peor", "MEJOR"], fontsize=9)
     for x in range(len(labels)):
         ax.axvline(x, color="0.8", lw=0.8, zorder=0)
-        ax.text(x, 1.06, f"{mn[x]:,.4g}", ha="center", fontsize=7, color="0.35")
-        ax.text(x, -0.12, f"{mx[x]:,.4g}", ha="center", fontsize=7, color="0.35")
-    ax.set_ylim(-0.05, 1.05)
-    ax.set_title(f"Frente robusto combinado — {len(P)} políticas, "
-                 f"{len(seeds)} semillas", pad=24)
-    fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap="viridis"), ax=ax,
-                 label="Costo J4", pad=0.01)
+        ax.text(x, 1.05, f"{mejor[x]:,.4g}", ha="center", fontsize=8,
+                color="#1a6b1a", fontweight="bold")
+        ax.text(x, -0.10, f"{peor[x]:,.4g}", ha="center", fontsize=8, color="#8b1a1a")
+    ax.axhline(1.0, color="#1a6b1a", lw=0.8, ls=":", alpha=0.6)
+    ax.axhline(0.0, color="#8b1a1a", lw=0.8, ls=":", alpha=0.6)
+    ax.set_ylim(-0.16, 1.12)
+    ax.set_title(f"Frente robusto combinado — {len(P)} políticas de {len(seeds)} "
+                 f"semillas\nel borde SUPERIOR es siempre el mejor valor del frente",
+                 pad=26, fontsize=12)
+    fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap="viridis_r"), ax=ax,
+                 label="Costo J4 (oscuro = mas barato)", pad=0.01)
 
-    di = lab0.index("Déficit AP") if "Déficit AP" in lab0 else min(1, len(lab0) - 1)
-    k = next((j for j in range(len(lab0)) if j not in (ci, di)), 0)
+    di = labels.index("Deficit AP") if "Deficit AP" in labels else (
+        labels.index("Déficit AP") if "Déficit AP" in labels else min(1, len(labels)-1))
+    k = next((j for j in range(len(labels)) if j not in (ci, di)), 0)
     sc = ax2.scatter(V[:, ci], V[:, di], c=V[:, k], cmap="plasma", s=26,
                      edgecolor="k", linewidth=0.25)
-    ax2.set_xlabel(labels[ci]); ax2.set_ylabel(labels[di])
-    ax2.set_title("Trade-off dominante: costo vs déficit")
+    ax2.set_xlabel(labels[ci] + "  (menor es mejor →)")
+    ax2.set_ylabel(labels[di] + "  (menor es mejor →)")
+    ax2.invert_xaxis(); ax2.invert_yaxis()      # lo mejor hacia arriba-derecha
+    ax2.set_title("Trade-off dominante: costo vs deficit  "
+                  "(arriba-derecha = mejor en ambos)")
     ax2.grid(alpha=0.3)
     fig.colorbar(sc, ax=ax2, label=labels[k])
     fig.savefig(out, dpi=150, bbox_inches="tight")

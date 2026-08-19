@@ -83,6 +83,20 @@ def apply_balance_correction(surf_denorm: np.ndarray,
     if not link_idx or demand_m3s is None or len(demand_m3s) == 0:
         return surf_denorm
 
+    # ── Guarda de unidades ───────────────────────────────────────────────────
+    # `demand_m3s` DEBE venir en m³/s crudos. Es un error fácil de cometer:
+    # el zarr de predicciones de evaluate_recursive guarda Y desnormalizado
+    # pero X NORMALIZADO, de modo que pasarle su columna AP_WaterDemand entrega
+    # z-scores. Con z-scores el residuo (k·D − U) se divide por un S incoherente
+    # y el factor satura en MAX_FACTOR para todos los años, inflando el costo
+    # sin que nada falle de forma visible.
+    d_arr = np.asarray(demand_m3s, dtype=float)
+    if np.nanmin(d_arr) < -1e-9:
+        raise ValueError(
+            "demand_m3s tiene valores negativos: parece normalizado (z-scores) "
+            "en vez de m³/s crudos. Toma la demanda del zarr de entrenamiento "
+            f"(X crudo), no del zarr de predicciones. min={np.nanmin(d_arr):.4f}")
+
     out = surf_denorm.copy()
     t0 = decision_start_week
     S = np.maximum(np.nan_to_num(out[t0:, link_idx]), 0.0)          # (T', n_links)
