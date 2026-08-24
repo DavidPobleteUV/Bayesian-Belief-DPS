@@ -50,3 +50,4 @@ logs_smoke_*.log
 # Respaldo de los artefactos del emulador anterior (checkpoint, scalers,
 # train_subset). Son binarios y el modelo vigente ya esta ignorado mas arriba.
 data_weap/_antiguo_iter1_sincorregir/
+logs_robustez_*.log

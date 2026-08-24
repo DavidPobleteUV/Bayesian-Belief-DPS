@@ -1,0 +1,50 @@
+{
+  "n_politicas": 25,
+  "contextos": [
+    [
+      882,
+      "megasequia"
+    ],
+    [
+      693,
+      "sequia_extrema"
+    ]
+  ],
+  "objetivos": [
+    "J1_gw_storage",
+    "J2_unmet_ap",
+    "J3_agri_value",
+    "J4_supply_cost",
+    "J51_mean_town_fail",
+    "J52_worst_year_frac",
+    "J6_coastal_salinity"
+  ],
+  "start_id": 2100,
+  "roles": [
+    "extremo_J1",
+    "extremo_J2",
+    "extremo_J3",
+    "extremo_J4",
+    "extremo_J5",
+    "balanceada_1",
+    "balanceada_2",
+    "balanceada_3",
+    "balanceada_4",
+    "balanceada_5",
+    "balanceada_6",
+    "balanceada_7",
+    "balanceada_8",
+    "balanceada_9",
+    "balanceada_10",
+    "balanceada_11",
+    "balanceada_12",
+    "balanceada_13",
+    "balanceada_14",
+    "balanceada_15",
+    "balanceada_16",
+    "balanceada_17",
+    "balanceada_18",
+    "balanceada_19",
+    "balanceada_20"
+  ]
+}

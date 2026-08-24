@@ -1,0 +1,12 @@
+{
+  "n_sow": 81,
+  "n_climas": 15,
+  "n_politicas": 40,
+  "umbrales": {
+    "J52_worst_year_frac": 1.15,
+    "J51_mean_town_fail": 900.0
+  },
+  "dominio_mediana": 1.0,
+  "dominio_max": 1.0,
+  "n_robustas_90": 34
+}

@@ -175,7 +175,7 @@ def schedule_to_weap_csv(
     start_year: int,
     output_path: Path,
     include_q_values: bool = False,
-    hydro_end_year: int = 2050,
+    hydro_end_year: int = 2060,
 ) -> None:
     """
     Genera CSV en formato WEAP `$Columns = ...` con 2 filas por AÑO HIDROLÓGICO
@@ -190,6 +190,14 @@ def schedule_to_weap_csv(
 
     Si include_q_values=True, agrega también las columnas q_* (útil para
     debug y para análisis post-WEAP).
+
+    `hydro_end_year` DEBE llegar al fin de la simulación WEAP (2060). Estuvo en
+    2050 y ese desfase es exactamente el defecto que invalidó la iteración
+    anterior: las expresiones de capacidad son
+    `If(ReadFromFile(pf, col) > 0, CAP_ALTA, CAP_BAJA)`, de modo que sin dato la
+    capacidad cae a CAP_BAJA y la acción deja de entregar agua mientras las
+    columnas act_*/q_* de X la siguen declarando activa. Fueron 520 de 1.716
+    semanas del periodo de decisión con entrada y salida en contradicción.
     """
     n_years = action_history.shape[0]
     if include_q_values:

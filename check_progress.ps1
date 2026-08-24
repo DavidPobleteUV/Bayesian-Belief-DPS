@@ -1,9 +1,12 @@
 # check_progress.ps1 - Avance de las semillas del Robust DPS.
 # ASCII puro a proposito (ver nota en run_robust_server.ps1).
 
+# Los defaults deben seguir a los de run_robust_server.ps1: si divergen, este
+# script apunta a un directorio que no existe y falla, o peor, reporta el avance
+# de una corrida anterior.
 param(
-    [string]$OutDir   = "runs_weap\robust_iter1_h128",
-    [int]   $NScen    = 15,     # 5 climas x 3 demandas
+    [string]$OutDir   = "runs_weap\robust_iter1_fix2050",
+    [int]   $NScen    = 27,     # DPS_N_SOW: diseno balanceado clima x poblacion x area
     [int]   $Target   = 4000    # evaluaciones pedidas
 )
 
