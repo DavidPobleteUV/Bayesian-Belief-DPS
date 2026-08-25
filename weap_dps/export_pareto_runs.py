@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-export_pareto_iter2.py — 50 runs WEAP desde el frente de la iteración corregida.
+export_pareto_runs.py — runs WEAP desde el frente de una iteración del DPS.
 
 Paso 3 del ciclo de refinamiento (§5 de Metodología): las políticas del frente se
 decodifican a cronogramas ejecutables y se simulan en WMMaS2 para medir la
