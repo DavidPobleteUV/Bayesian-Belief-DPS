@@ -1,0 +1,20 @@
+frente no dominado: 359 políticas de 600
+15:19:45 [PARETO_EXPORT] INFO Loading checkpoint: C:\Users\David\Documents\GitHub_DPL\Bayesian-Belief-DPS\data_weap\best_model.ckpt
+15:19:45 [PARETO_EXPORT] INFO Índices GW/Surface tomados del template (n_gw=318, n_surface=126)
+15:19:45 [PARETO_EXPORT] INFO Loaded MLP: n_x=519  n_gw=318  n_surface=126  device=cpu
+15:19:45 [PARETO_EXPORT] INFO   target_names: GW=318  Surface=126
+15:19:45 [PARETO_EXPORT] INFO Escaladores de X alineados al modelo: 527 → 519 columnas
+15:19:45 [PARETO_EXPORT] INFO Estado de politica: 4 pueblos con unmet+demanda (APR_Q06_Dem_Guanguali, APR_Q09_Dem_ElEsfuerzo, APR_Q09_Dem_Quilimari, APU_Q09_Dem_Pichidangui), 8 pozos costeros, 34 links de suministro
+15:19:45 [PARETO_EXPORT] INFO Correccion de balance: ON  (k=1.7083, 34 links, 5 unmet)
+15:19:45 [PARETO_EXPORT] INFO .3 WATERFALL enabled — J4 uses well-anchored cascade (4 towns mapped)
+15:19:45 [PARETO_EXPORT] INFO Lag triples cacheadas: 380 entradas
+  40/359  (2.94 s/política, faltan 15.6 min)
+  80/359  (2.95 s/política, faltan 13.7 min)
+  120/359  (2.89 s/política, faltan 11.5 min)
+  160/359  (2.85 s/política, faltan 9.5 min)
+  200/359  (2.90 s/política, faltan 7.7 min)
+  240/359  (2.99 s/política, faltan 5.9 min)
+  280/359  (3.05 s/política, faltan 4.0 min)
+  320/359  (3.10 s/política, faltan 2.0 min)
+
+guardado: results\frente_decodificado.npz  (1115 s)
