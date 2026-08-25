@@ -161,7 +161,67 @@ def fig_paralelas(F, activa, acc, obj, ctx_i=0):
                  fontsize=12, weight="bold")
     ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout()
-    fig.savefig(OUT / "2_paralelas.png", dpi=160, bbox_inches="tight"); plt.close(fig)
+    fig.savefig(OUT / "2_1_paralelas.png", dpi=160, bbox_inches="tight"); plt.close(fig)
+
+
+# ── 2.2 pequeños múltiplos: un panel por cartera ─────────────────────────────
+def fig_paralelas_facetas(F, activa, acc, obj, ctx_i=0, n_min=10):
+    """Misma información que 2.1 pero sin superposición.
+
+    Con 359 líneas y ocho carteras, el gráfico único satura y las carteras
+    minoritarias quedan tapadas por las dominantes. Aquí cada panel aísla una
+    cartera contra el frente completo en gris, de modo que su firma —qué ejes
+    mejora y cuáles sacrifica— se lee de inmediato.
+    """
+    A = activa[:, ctx_i, :]
+    cart, inv, cuenta = np.unique(A, axis=0, return_inverse=True, return_counts=True)
+    orden = np.argsort(-cuenta)
+    grandes = [int(o) for o in orden if cuenta[o] >= n_min]
+    resto = [int(o) for o in orden if cuenta[o] < n_min]
+    paneles = [(o, etiqueta(cart[o], acc), cuenta[o]) for o in grandes]
+    if resto:
+        paneles.append((None, "otras carteras", sum(cuenta[o] for o in resto)))
+
+    Z = np.zeros_like(F, dtype=float)
+    for k in range(F.shape[1]):
+        v = F[:, k]; rng = v.max() - v.min()
+        Z[:, k] = 1 - (v - v.min()) / (rng if rng > 1e-12 else 1.0)
+
+    n = len(paneles)
+    ncol = 3; nrow = int(np.ceil(n / ncol))
+    fig, axes = plt.subplots(nrow, ncol, figsize=(5.0 * ncol, 3.3 * nrow),
+                             sharex=True, sharey=True)
+    axes = np.atleast_1d(axes).ravel()
+    x = np.arange(F.shape[1])
+    colores = plt.cm.tab10(np.linspace(0, 1, 10))
+    for k, (o, nom, n_pol) in enumerate(paneles):
+        ax = axes[k]
+        for i in range(len(F)):                      # frente completo, de fondo
+            ax.plot(x, Z[i], color="#dddddd", lw=0.6, alpha=0.55, zorder=1)
+        mask = (inv == o) if o is not None else np.isin(inv, resto)
+        for i in np.where(mask)[0]:
+            ax.plot(x, Z[i], color=colores[k % 10], lw=1.1, alpha=0.75, zorder=3)
+        med = np.median(Z[mask], axis=0)
+        ax.plot(x, med, color="black", lw=2.4, zorder=4)
+        ax.set_title(f"{nom}\n(n={n_pol}, {100*n_pol/len(F):.0f} %)", fontsize=9.5)
+        ax.set_xticks(x)
+        ax.set_xticklabels([OBJ.get(o_, o_) for o_ in obj], fontsize=8, rotation=30,
+                           ha="right")
+        ax.set_ylim(-0.05, 1.05); ax.set_yticks([0, 1])
+        ax.set_yticklabels(["peor", "mejor"], fontsize=8)
+        for xi in x:
+            ax.axvline(xi, color="#eeeeee", lw=0.8, zorder=0)
+        ax.spines[["top", "right"]].set_visible(False)
+    for k in range(n, len(axes)):
+        axes[k].axis("off")
+    fig.suptitle("Firma de cada cartera sobre el frente — "
+                 f"{CTX_NOM.get(list(CTX_NOM)[ctx_i], '')}",
+                 fontsize=13, weight="bold")
+    fig.text(0.5, 0.005, "Gris: las 359 políticas. Color: la cartera del panel. "
+             "Negro: su mediana. Todos los ejes con MEJOR arriba.",
+             ha="center", fontsize=9, style="italic")
+    fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+    fig.savefig(OUT / "2_2_paralelas_facetas.png", dpi=160); plt.close(fig)
 
 
 # ── 3. sendas de adaptación ──────────────────────────────────────────────────
@@ -310,7 +370,8 @@ def main() -> int:
         for o in np.argsort(-cuenta):
             print(f"      {100*cuenta[o]/len(A):5.1f}%  {etiqueta(cart[o], acc)}")
     fig_carteras(activa, acc, ctx);      print("  1_carteras.png")
-    fig_paralelas(F, activa, acc, obj);  print("  2_paralelas.png")
+    fig_paralelas(F, activa, acc, obj);          print("  2_1_paralelas.png")
+    fig_paralelas_facetas(F, activa, acc, obj);  print("  2_2_paralelas_facetas.png")
     fig_sendas(hist, acc);               print("  3_sendas.png")
     fig_migracion(activa, acc, ctx);     print("  4_migracion.png")
     fig_robustez(activa, acc, idx_front); print("  5_robustez.png")
