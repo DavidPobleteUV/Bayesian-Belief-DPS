@@ -35,6 +35,7 @@ GW_TYPES = {"GW", "GW_flux", "AP_wells", "Ag_wells"}
 from weap_dps.config_weap import (
     CKPT_PATH, SCALERS_PATH, TRANSFORM_PARAMS_PATH, MANIFEST_PATH,
     WARMUP_WEEKS, WEEKS_PER_YEAR, ZARR_TEMPLATE_PATH,
+    DOTACION_SUBSISTENCIA_LPD, POZOS_OBSERVACION,
 )
 from rdm_mlp.models.lightning_module import WEAPHydroMLPLightning
 
@@ -494,6 +495,17 @@ class MLPSurrogate:
         self._st_towns = towns
         self._st_unmet_y = [unmet[t] for t in towns]
         self._st_dem_x = [dem[t] for t in towns]
+        # Población por pueblo: define la demanda de subsistencia contra la que
+        # se mide el déficit (ver DOTACION_SUBSISTENCIA_LPD). Si falta la columna
+        # de algún pueblo, ese pueblo cae al criterio antiguo (demanda total).
+        pop = {n[len("AP_Poblacion__"):-len("_(cap)")]: i
+               for i, n in enumerate(feature_names)
+               if n.startswith("AP_Poblacion__") and n.endswith("_(cap)")}
+        self._st_pop_x = [pop.get(t, -1) for t in towns]
+        if -1 in self._st_pop_x:
+            logger.warning("Sin poblacion para %s: su deficit se medira contra "
+                           "la demanda total, no contra la subsistencia",
+                           [t for t, i in zip(towns, self._st_pop_x) if i < 0])
 
         self._st_agr_unmet = [i for i, n in enumerate(ts)
                               if n.startswith("AGR_UnmetDemand__")]
@@ -513,6 +525,43 @@ class MLPSurrogate:
                 self._st_supply.append(i)
         self._st_gw_storage = [i for i, n in enumerate(tg)
                                if n.startswith("SHAC_storage_")]
+
+        # ── Estado observable: pozos de monitoreo e índices de precipitación ──
+        idx_gw = {n: i for i, n in enumerate(tg)}
+        self._st_pozos = [idx_gw[p] for p in POZOS_OBSERVACION if p in idx_gw]
+        if not self._st_pozos:
+            raise SystemExit(
+                "Ningun pozo de POZOS_OBSERVACION existe en el modelo. El estado "
+                "de la politica quedaria ciego al acuifero: revisa los nombres "
+                "contra surrogate.target_names_gw.")
+        if len(self._st_pozos) != len(POZOS_OBSERVACION):
+            faltan = [p for p in POZOS_OBSERVACION if p not in idx_gw]
+            logger.warning("Pozos de observacion no encontrados en el modelo: %s. "
+                           "El estado usara los %d disponibles.",
+                           [p.split('__')[-1] for p in faltan], len(self._st_pozos))
+        # SPI formal: gamma ajustada al registro historico 1989-2019 (ver
+        # build_spi_reference.py). NO se usan las columnas PP_acum de X por dos
+        # razones: estan construidas solo desde Subcuenca_Q01 —el SPI es un
+        # indice de CUENCA— y vienen en z-score contra el ensamble, que es una
+        # climatologia sintetica en vez del registro observado.
+        import json as _json
+        idx_x = {n: i for i, n in enumerate(feature_names)}
+        self._st_precip = [idx_x[n] for n in feature_names
+                           if n.startswith("Precipitation__Subcuenca_")
+                           and n in idx_x]
+        ref = Path(__file__).resolve().parent.parent / "data_weap" / "reference" / "spi_gamma.json"
+        self._spi_ref = None
+        if ref.exists() and self._st_precip:
+            self._spi_ref = _json.loads(ref.read_text(encoding="utf-8"))["ventanas"]
+        else:
+            logger.warning("Sin %s o sin columnas de precipitacion: el SPI "
+                           "quedara en 0 y la politica sera ciega al clima.",
+                           ref.name)
+        logger.info("Estado observable: %d/%d pozos de monitoreo, %d subcuencas "
+                    "de precipitacion, SPI gamma %s",
+                    len(self._st_pozos), len(POZOS_OBSERVACION),
+                    len(self._st_precip),
+                    "1989-2019" if self._spi_ref else "AUSENTE")
         logger.info("Estado de politica: %d pueblos con unmet+demanda (%s), "
                     "%d pozos costeros, %d links de suministro",
                     len(towns), ", ".join(towns), len(self._st_zcoast),
@@ -551,13 +600,68 @@ class MLPSurrogate:
             # queda neutro en vez de romper el rollout
             "ap_unmet_frac": 0.0, "truck_frac": 0.0,
             "agr_unmet_idx": 0.0, "z_coastal": 0.0,
+            **{f"sgi_{i}": 0.0 for i in range(1, len(POZOS_OBSERVACION) + 1)},
+            "spi_12": 0.0, "spi_24": 0.0,
         }
+
+        # ── Variables observables ────────────────────────────────────────────
+        # SGI: indice de nivel subterraneo estandarizado, analogo al SPI. El
+        # nivel de cada pozo ya viene en z-score contra la distribucion del
+        # entrenamiento, de modo que es ADIMENSIONAL y comparable entre pozos y
+        # con los indices de precipitacion. En unidades fisicas no lo seria: un
+        # pozo de 7 m y uno de 15 m no admiten comparacion directa, y el mas
+        # profundo dominaria la entrada de la politica por pura escala.
+        # SIGNO: la variable del modelo es PROFUNDIDAD al agua, donde mayor es
+        # peor. El SGI se define sobre el NIVEL (cota = terreno - profundidad),
+        # donde mayor es mejor. Como la cota de terreno es constante por pozo,
+        # estandarizar la cota equivale a invertir el z-score de la profundidad.
+        for k_, j_ in enumerate(getattr(self, "_st_pozos", [])):
+            st[f"sgi_{k_ + 1}"] = -float(np.nanmean(gw_recent[:, j_]))
+        # SPI al FINAL de la ventana, no promediado: es un indice acumulado que
+        # ya integra las 52 o 104 semanas previas, de modo que promediarlo
+        # equivaldria a acumular dos veces.
+        # SPI: la ACUMULACION sale de la precipitacion del propio run —la
+        # politica observa el clima de SU futuro—, pero se estandariza contra la
+        # gamma del REGISTRO HISTORICO. Estandarizar contra el propio futuro
+        # dejaria el indice centrado en cero dentro de cada escenario y un mundo
+        # permanentemente seco marcaria SPI ~ 0.
+        ref = getattr(self, "_spi_ref", None)
+        if ref and x_norm is not None and getattr(self, "_st_precip", None):
+            from scipy import stats as _stats
+            w_max = max(v["semanas"] for v in ref.values())
+            ini = max(0, t_end_observed - w_max)
+            pp = self.denormalize_x_cols(x_norm[ini:t_end_observed], self._st_precip)
+            pp = np.maximum(np.nan_to_num(pp), 0.0).mean(axis=1)   # media de cuenca
+            for nom, par in ref.items():
+                w_ = int(par["semanas"])
+                if len(pp) < w_:
+                    continue
+                acc = float(pp[-w_:].sum())
+                q0 = float(par.get("prob_cero", 0.0))
+                cdf = q0 + (1 - q0) * _stats.gamma.cdf(
+                    acc, par["forma"], loc=0.0, scale=par["escala"])
+                st[nom] = float(_stats.norm.ppf(np.clip(cdf, 1e-6, 1 - 1e-6)))
         if not hasattr(self, "_st_towns") or t_end_observed <= t0:
             return st
 
         sl = surf_norm[t0:t_end_observed]
 
-        # J2: deficit AP relativo (m3/s en ambos → la razón es adimensional)
+        # J2: deficit AP relativo (m3/s en ambos -> la razon es adimensional).
+        #
+        # NO se acota a una dotacion de subsistencia por habitante. Se intento
+        # definir D_sub = min(D, 200 L/hab/dia x poblacion) para no contar como
+        # falla el recorte del consumo estival, pero la premisa era falsa: en el
+        # modelo la poblacion es PLANA a lo largo del anio (razon intraanual
+        # maximo/minimo = 1.020) mientras la demanda se TRIPLICA (3.001). Es
+        # decir, WEAP representa la poblacion flotante de verano como un
+        # multiplicador de demanda sobre poblacion residente constante, no como
+        # mayor consumo por persona. El consumo por habitante real se mantiene en
+        # 143 L/dia todo el anio, bajo los 200, de modo que un corte per capita
+        # calculado sobre la poblacion residente clasificaba como discrecional el
+        # agua de subsistencia de los visitantes.
+        #
+        # Separar residente de flotante exigiria informacion que el modelo no
+        # entrega. Queda como limitacion declarada (§4.2 de la metodologia).
         if self._st_towns and x_norm is not None:
             u = self.denormalize_y_cols(sl, self._st_unmet_y, "surface")
             d = self.denormalize_x_cols(x_norm[t0:t_end_observed], self._st_dem_x)

@@ -22,6 +22,7 @@ modificado, de modo que J4 refleja la asignación de la cascada.
 """
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 
@@ -32,27 +33,57 @@ import zarr
 from weap_dps.config_weap import (TOWN_SOURCE_COST_CSV, TRAIN_ZARR_PATH,
                                   UNIT_COST_BY_SOURCE)
 
+logger = logging.getLogger(__name__)
+
 SEC = 604800.0      # s per week
 LPS = 604.8         # 1 L/s expressed in m3/week-ish factor used offline (m3/s*SEC)
 # physical caps (L/s) -> m3/week via *LPS; desal/camiones effectively uncapped
 # Topes físicos (L/s) -> m3/semana vía *LPS. Desal y camiones van sin tope
-# efectivo. El acuerdo tiene 25 L/s POR LOCALIDAD (§2.2 de la metodología): son
-# arreglos bilaterales, no una tubería compartida.
+# efectivo.
+#
+# El acuerdo tiene 25 L/s POR SHAC, no por localidad: el cupo lo fija el acuífero
+# que cede el agua, y las localidades que extraen del mismo SHAC lo COMPARTEN.
+# Ver `SHARED_CAP_SOURCES` y `apply`. Aplicarlo por enlace —como se hacía antes—
+# multiplicaba la capacidad real: Q09 abastece cuatro localidades, de modo que su
+# tope efectivo pasaba de 25 a 100 L/s, y ahí está el 94 % de la población. El
+# efecto medido sobre el frente era un volumen cedido de 33 Mm³ contra los 7.9
+# que entrega WMMaS2.
 CAP_LPS = {"Aduccion": 2.0, "PozoCostero": 120.0, "Desal": 1e9,
            "Acuerdo": 25.0, "Camiones": 1e9}
 DEMAND_EFFICIENCY = 0.70   # gross need = demand / 0.70 (matches offline)
 
-# Fuentes que participan de la cascada.
+# Fuentes que participan de la cascada. El acuerdo ENTRA, con su tope real.
 #
-# El acuerdo estuvo excluido, y se le ponían los enlaces en cero, porque SIN TOPE
-# absorbía todo el residuo y anulaba los camiones aljibe —que son la fuente de
-# última instancia y la señal de estrés del sistema—. Pero el acuerdo sí tiene
-# tope: 25 L/s por localidad. Excluirlo lo dejaba estrictamente dominado: seguía
-# costando valor agrícola (el emulador responde a su bandera) sin aportar agua
-# urbana ni reducir el costo, de modo que ninguna política racional lo activaba y
-# el catálogo quedaba reducido de cuatro acciones a tres. Con su capacidad real
-# entra en la cascada como cualquier otra fuente.
+# Su tope es de 25 L/s POR SHAC y lo COMPARTEN las localidades que extraen del
+# mismo acuífero agrícola (ver SHARED_CAP_SOURCES y `apply`). Aplicarlo por enlace
+# —como se hacía antes— multiplicaba la capacidad: Q09 abastece cuatro
+# localidades, de modo que su tope efectivo era 100 y no 25 L/s, y ahí está el
+# 94 % de la población.
+#
+# Volumen cedido en el frente, contra las 30 corridas de WMMaS2 donde el acuerdo
+# opera (24.46 Mm³, tasa 0.904 Mm³ por año encendido):
+#
+#     tope por enlace          33.0 Mm³   +35 %
+#     tope por SHAC            23.2 Mm³    -5 %   <- vigente
+#     fuera de la cascada      27.5 Mm³   +12 %   (predicción nativa del emulador)
+#
+# La opción vigente es la más fiel de las tres. Se evaluó sacarlo de la cascada
+# para conservar la predicción nativa —que el criterio 3 puntúa con razón 0.965,
+# la mejor de todas las fuentes— y resulta peor que el tope por SHAC, además de
+# dejar al acuerdo fuera del orden de mérito y por tanto fuera del análisis de
+# umbrales de precio (§4.7).
 CASCADE_SOURCES = ("Aduccion", "PozoCostero", "Desal", "Acuerdo", "Camiones")
+
+# Fuentes cuyo tope es COMPARTIDO por un grupo de localidades en vez de aplicarse
+# a cada enlace por separado. El cupo del grupo se reparte a prorrata del agua que
+# le falta a cada localidad tras las fuentes más baratas, sin prioridad entre
+# ellas: ninguna localidad tiene preferencia sobre otra del mismo SHAC.
+SHARED_CAP_SOURCES = ("Acuerdo",)
+
+# Localidades costeras que la desaladora costera puede abastecer y cuyo nombre no
+# lleva el prefijo Q09. Hoy esta vacio —las cuatro costeras son Q09— y existe
+# para no tener que tocar la logica si se agrega una.
+COSTERAS_EXTRA: set[str] = set()
 
 
 def merit_order(unit_costs: dict | None = None,
@@ -164,11 +195,64 @@ class WaterfallAllocator:
         self.x_methods = surrogate.transform_methods_x_filt
         self.alpha = surrogate.transform_alpha
 
-        # action gating: q_* columns in X (active over horizon -> source available)
-        self.q_desal_cols = [feat_idx[c] for c in
-                             ["q_desalacion_costera", "q_desalacion_completa"] if c in feat_idx]
+        # Grupo de tope compartido por localidad. El acuerdo se limita POR SHAC,
+        # de modo que las localidades que extraen del mismo acuífero agrícola
+        # comparten los 25 L/s. El grupo se lee del propio nombre del enlace
+        # (DemAGRO_SHAC_QXX_fict), no de una tabla aparte, para que no pueda
+        # quedar desincronizado del registro.
+        self.grupo_compartido = {}
+        for town, T in reg.items():
+            if town not in self.towns:
+                continue
+            nm = T["names"].get("Acuerdo")
+            g = re.search(r"(DemAGRO_SHAC_Q\d+)", nm or "")
+            self.grupo_compartido[town] = g.group(1) if g else town
+        _g = {}
+        for t, k in self.grupo_compartido.items():
+            _g.setdefault(k, []).append(t)
+        logger.info("Tope compartido del acuerdo: %d SHAC -> %s",
+                    len(_g), {k.replace("DemAGRO_SHAC_", ""): sorted(v)
+                              for k, v in sorted(_g.items())})
+
+        # Gating de acciones: columnas q_* en X. Las dos desaladoras se mantienen
+        # SEPARADAS porque no tienen el mismo alcance (ver `_gates`): la costera
+        # abastece solo a las localidades de Q09, la completa al sistema entero.
+        self.q_desal_costera_col = feat_idx.get("q_desalacion_costera")
+        self.q_desal_completa_col = feat_idx.get("q_desalacion_completa")
+        self.q_desal_cols = [c for c in (self.q_desal_costera_col,
+                                         self.q_desal_completa_col) if c is not None]
         self.q_pozo_col = feat_idx.get("q_nuevo_pozo_a_5km")
         self.q_acuerdo_col = feat_idx.get("q_acuerdo")
+
+    @staticmethod
+    def _es_q09(town: str) -> bool:
+        """La desaladora costera solo llega a las localidades del sector Q09."""
+        return "Q09" in town or town in COSTERAS_EXTRA
+
+    def _gates(self, X_used: np.ndarray, town: str) -> dict:
+        """Disponibilidad de cada fuente SEMANA A SEMANA para una localidad.
+
+        El gate se evalua por paso de tiempo, no una vez sobre todo el horizonte.
+        La version anterior usaba `np.nanmax(X_used[:, c]) > 0`, es decir, bastaba
+        que la accion se encendiera alguna vez para que la cascada despachara la
+        obra desde la primera semana: una desaladora activada en 2045 entregaba
+        agua desde 2027 mientras el CAPEX se cobraba en la fecha correcta. Medido
+        sobre el frente, eso ocurria en el 37.8 % de las semanas para la
+        desalacion, el 42.0 % para el pozo costero y el 67.5 % para el acuerdo, y
+        subestimaba J4 en un 5.4 % mediano (hasta 51.6 %) ademas de distorsionar
+        por completo el reparto entre fuentes.
+        """
+        Tn = X_used.shape[0]
+        def on(col):
+            return (np.nan_to_num(X_used[:, col]) > 0 if col is not None
+                    else np.zeros(Tn, bool))
+        # La costera solo habilita a Q09; la completa habilita a cualquiera.
+        desal = on(self.q_desal_completa_col)
+        if self._es_q09(town):
+            desal = desal | on(self.q_desal_costera_col)
+        return {"Desal": desal,
+                "PozoCostero": on(self.q_pozo_col),
+                "Acuerdo": on(self.q_acuerdo_col)}
 
     # ── inverse X transform for the demand column ──
     def _denorm_x(self, x_norm: np.ndarray, col: int) -> np.ndarray:
@@ -185,32 +269,56 @@ class WaterfallAllocator:
         return unstd
 
     def apply(self, surf_denorm: np.ndarray, X_used: np.ndarray) -> np.ndarray:
-        """Return surf_denorm with desal/aduccion/pozo/camiones overwritten by the
-        well-anchored cascade and Acuerdo zeroed, per town. X_used = normalized X
-        actually used in the rollout (actions injected); demand & gates read from it.
+        """Return surf_denorm with the cascade allocation written into the links.
+
+        Recorre las fuentes por ORDEN DE MÉRITO (bucle externo) y las localidades
+        por dentro, en vez de al revés. El orden importa: las fuentes de tope
+        COMPARTIDO —hoy solo el acuerdo, ver SHARED_CAP_SOURCES— necesitan ver el
+        faltante de todas las localidades del grupo a la vez para poder repartir
+        el cupo a prorrata. Con el bucle invertido, cada localidad consumía el
+        tope completo como si fuera suyo.
         """
         out = surf_denorm.copy()
         Tn = out.shape[0]
-        # global action gates (step functions -> active if ever >0 over horizon)
-        desal_on = any(np.nanmax(X_used[:, c]) > 0 for c in self.q_desal_cols)
-        pozo_on = (self.q_pozo_col is not None and np.nanmax(X_used[:, self.q_pozo_col]) > 0)
-        acuerdo_on = (self.q_acuerdo_col is not None
-                      and np.nanmax(X_used[:, self.q_acuerdo_col]) > 0)
-        gates = {"Desal": desal_on, "PozoCostero": pozo_on, "Acuerdo": acuerdo_on}
 
+        # Faltante por localidad tras el pozo propio, que es el ancla de la cascada.
+        rem, gates = {}, {}
         for town, R in self.towns.items():
             demand_raw = self._denorm_x(X_used[:, R["dcol"]], R["dcol"])   # m3/s
-            need = np.maximum(demand_raw, 0.0) * SEC / DEMAND_EFFICIENCY    # m3/week
+            need = np.maximum(demand_raw, 0.0) * SEC / DEMAND_EFFICIENCY   # m3/week
             well = np.maximum(out[:, R["well_col"]], 0.0)
-            rem = np.maximum(need - well, 0.0)
-            for st in self.priority:
-                if st not in R["cols"]:
-                    continue
-                if gates.get(st, True):
-                    cap = CAP_LPS[st] * LPS
-                    f = np.minimum(rem, cap)
-                else:
-                    f = np.zeros(Tn)
-                out[:, R["cols"][st]] = f
-                rem = rem - f
+            rem[town] = np.maximum(need - well, 0.0)
+            gates[town] = self._gates(X_used, town)
+
+        for st in self.priority:
+            cap = CAP_LPS[st] * LPS
+            elegibles = [t for t, R in self.towns.items() if st in R["cols"]]
+            if not elegibles:
+                continue
+
+            if st in SHARED_CAP_SOURCES:
+                # Un cupo por grupo (SHAC), repartido en proporción al faltante.
+                grupos = {}
+                for t in elegibles:
+                    grupos.setdefault(self.grupo_compartido.get(t, t), []).append(t)
+                for _, miembros in grupos.items():
+                    activos = {t: np.where(gates[t].get(st, np.ones(Tn, bool)),
+                                           rem[t], 0.0) for t in miembros}
+                    total = np.sum([activos[t] for t in miembros], axis=0)
+                    entrega = np.minimum(total, cap)
+                    # Sin faltante no hay reparto; el where evita 0/0.
+                    escala = np.divide(entrega, total, out=np.zeros(Tn),
+                                       where=total > 1e-12)
+                    for t in miembros:
+                        f = activos[t] * escala
+                        out[:, self.towns[t]["cols"][st]] = f
+                        rem[t] = rem[t] - f
+            else:
+                for t in elegibles:
+                    g = gates[t].get(st)
+                    if g is None:
+                        g = np.ones(Tn, bool)
+                    f = np.where(g, np.minimum(rem[t], cap), 0.0)
+                    out[:, self.towns[t]["cols"][st]] = f
+                    rem[t] = rem[t] - f
         return out

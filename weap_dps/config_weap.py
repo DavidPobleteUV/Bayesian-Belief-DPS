@@ -16,7 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR     = PROJECT_ROOT / "data_weap"
 # Checkpoint puede sobreescribirse por entorno (DPS_CKPT) para correr variantes
 # de modelo (v2/v3) sin tocar el default. Default = best_model.ckpt.
-CKPT_PATH    = Path(os.environ["DPS_CKPT"]) if os.environ.get("DPS_CKPT") else DATA_DIR / "best_model.ckpt"
+# CKPT_PATH se resuelve mas abajo, junto con el resto de los artefactos.
 
 # Cascada de despacho: J4 usa la asignación determinista anclada en el pozo
 # propio (pozo nativo -> resto de fuentes por ORDEN DE MÉRITO) en vez del reparto
@@ -43,11 +43,28 @@ DPS_WATERFALL = os.environ.get("DPS_WATERFALL", "1") == "1"
 # Reduce el error de J4 de 25.2% a 7.6%. Ver weap_dps/balance_correction.py.
 # ON por defecto; DPS_BALANCE=0 la apaga para reproducir corridas antiguas.
 DPS_BALANCE = os.environ.get("DPS_BALANCE", "1") == "1"
-MANIFEST_PATH = DATA_DIR / "manifest_inputs.csv"
-SCALERS_PATH  = DATA_DIR / "scalers_weap.npz"
-TRANSFORM_PARAMS_PATH = DATA_DIR / "transform_params_weap.npz"
+# Artefactos del emulador. Los cinco van juntos: checkpoint, scalers, parámetros
+# de transformada, manifest y template describen la MISMA iteración y mezclarlos
+# desalinea columnas en silencio. Cada uno admite override por entorno para poder
+# evaluar una iteración distinta sin tocar los archivos vigentes:
+#
+#   DPS_DATA_DIR=... (los cinco de una vez, si viven en la misma carpeta)
+#   DPS_CKPT / DPS_SCALERS / DPS_TRANSFORM / DPS_MANIFEST / DPS_TEMPLATE
+#
+# El override individual manda sobre DPS_DATA_DIR.
+_ART_DIR = Path(os.environ["DPS_DATA_DIR"]) if os.environ.get("DPS_DATA_DIR") else DATA_DIR
+
+
+def _art(env: str, nombre: str) -> Path:
+    return Path(os.environ[env]) if os.environ.get(env) else _ART_DIR / nombre
+
+
+CKPT_PATH     = _art("DPS_CKPT", "best_model.ckpt")
+MANIFEST_PATH = _art("DPS_MANIFEST", "manifest_inputs.csv")
+SCALERS_PATH  = _art("DPS_SCALERS", "scalers_weap.npz")
+TRANSFORM_PARAMS_PATH = _art("DPS_TRANSFORM", "transform_params_weap.npz")
 CLIMATE_DIR   = DATA_DIR / "climate_base"
-ZARR_TEMPLATE_PATH = DATA_DIR / "X_template.npz"   # 1 run baseline para reusar
+ZARR_TEMPLATE_PATH = _art("DPS_TEMPLATE", "X_template.npz")   # 1 run baseline
 
 RESULTS_DIR  = PROJECT_ROOT / "runs_weap"
 
@@ -181,8 +198,16 @@ UNIT_COST_BY_SOURCE = {
     "Desal":       2300.0,
     "Aduccion":    1200.0,
     "PozoCostero": 1500.0,
-    "Acuerdo":     2500.0,
+    "Acuerdo":     1800.0,      # = 1500 al agricultor + 300 de transacción
 }
+
+# Desglose de la tarifa del acuerdo de reasignación. Solo la primera componente
+# llega al predio; la segunda es costo de transacción y conducción. La distinción
+# no cambia el costo del operador —J4 factura los 1800— pero sí el balance del
+# agricultor, que es lo que determina si el instrumento consigue adhesión.
+# Ver `balance_acuerdo.py` y §4.9 de la metodología.
+ACUERDO_TARIFA_AGRICULTOR = 1500.0                  # CLP/m³ que recibe el predio
+ACUERDO_COSTO_TRANSACCION = 300.0                   # CLP/m³ que no llega al predio
 # Compat: fallback de Acuerdo (= UNIT_COST_BY_SOURCE["Acuerdo"])
 TARIFA_ACUERDO_CLP_PER_M3 = UNIT_COST_BY_SOURCE["Acuerdo"]
 
@@ -276,17 +301,44 @@ J51_THRESHOLD_FRAC = 0.10          # pueblo en falla esa semana si unmet/dem > 1
 #
 # El run 555 (111 mm/año, racha de 21 años secos) queda FUERA a propósito: se
 # reserva para el test de robustez posterior sobre el frente ya obtenido.
-DPS_CLIMATE_RUNS = [
-    0,    # 126.7 mm/año  CV 52%  NESM3/ssp585        - el GCM más seco
-    45,   # 154.7 mm/año  CV 41%  NESM3/ssp245        - seco y estable
-    9,    # 204.1 mm/año  CV 56%  EC-Earth3-Veg/ssp585
-    27,   # 213.3 mm/año  CV 37%  MPI-ESM1-2-LR/ssp585 - la menor dispersión
-    54,   # 247.5 mm/año  CV 45%  ACCESS-CM2/ssp245   - el GCM más húmedo
-    779,  # 158.8 mm/año  racha 11  sequía sev 0.83 dur 10
-    693,  # 166.2 mm/año  racha 10  sequía sev 0.85 dur 10
-    882,  # 173.9 mm/año  racha  9  sequía sev 0.70 dur 10
-    526,  # 216.5 mm/año  racha  7  sequía sev 0.72 dur 10
+# Dos conjuntos, seleccionables con DPS_CLIMATE_SET.
+#
+#   "gcm"    (por omisión): las 8 proyecciones GCM SIN sequía impuesta. Optimizar
+#            sobre futuros plausibles y dejar los severos para la verificación
+#            separa dos preguntas que conviene no mezclar: si la política es buena
+#            bajo lo esperable, y si además aguanta lo excepcional. Con sequías
+#            dentro de la optimización, el frente se desplaza hacia políticas que
+#            sobreconstruyen para un escenario que puede no ocurrir.
+#   "mixto"  el conjunto anterior: 5 GCM + 4 sequías impuestas de 10 años.
+#
+# Precipitación media anual medida sobre 2014-2060 en las 6 subcuencas.
+DPS_CLIMATE_RUNS_GCM = [
+    0,    # 130.5 mm/año  CV 56%  NESM3/ssp585         - el más seco
+    45,   # 158.4 mm/año  CV 39%  NESM3/ssp245         - seco y estable
+    63,   # 184.5 mm/año  CV 47%  MPI-ESM1-2-LR/ssp245
+    9,    # 184.8 mm/año  CV 58%  EC-Earth3-Veg/ssp585 - la mayor dispersión
+    27,   # 201.0 mm/año  CV 41%  MPI-ESM1-2-LR/ssp585
+    18,   # 202.0 mm/año  CV 53%  ACCESS-CM2/ssp585
+    36,   # 216.3 mm/año  CV 47%  AWI-CM-1-1-MR/ssp585
+    54,   # 234.1 mm/año  CV 46%  ACCESS-CM2/ssp245    - el más húmedo
 ]
+
+DPS_CLIMATE_RUNS_MIXTO = [
+    0,    # 130.5 mm/año  NESM3/ssp585
+    45,   # 158.4 mm/año  NESM3/ssp245
+    9,    # 184.8 mm/año  EC-Earth3-Veg/ssp585
+    27,   # 201.0 mm/año  MPI-ESM1-2-LR/ssp585
+    54,   # 234.1 mm/año  ACCESS-CM2/ssp245
+    779,  # sequía sev 0.83 dur 10 desde 2040
+    693,  # sequía sev 0.85 dur 10 desde 2040
+    882,  # sequía sev 0.70 dur 10 desde 2035
+    526,  # sequía sev 0.72 dur 10 desde 2025
+]
+
+_SET = os.environ.get("DPS_CLIMATE_SET", "gcm").lower()
+if _SET not in ("gcm", "mixto"):
+    raise SystemExit(f"DPS_CLIMATE_SET='{_SET}' no válido: usa 'gcm' o 'mixto'.")
+DPS_CLIMATE_RUNS = DPS_CLIMATE_RUNS_GCM if _SET == "gcm" else DPS_CLIMATE_RUNS_MIXTO
 
 # ─── Diseño de estados del mundo (SOW) ─────────────────────────────────────
 # Tres incertidumbres, las mismas del diseño experimental de WEAP:
@@ -314,18 +366,78 @@ DPS_N_SOW = 27      # 27 -> 56 h con 4000 evals | 36 -> 75 h (balance perfecto)
 # puede codificar cronogramas de lazo ABIERTO ("construir en el año 5") en vez
 # de reglas de lazo cerrado ("construir si el acuífero baja de X"), que es
 # justamente lo que un Direct Policy Search busca demostrar.
+# ─── Estado observado por la política ──────────────────────────────────────
+# CRITERIO: toda variable del estado debe ser MEDIBLE en la cuenca al momento de
+# decidir. Una política de lazo cerrado que dependa de una cantidad que solo
+# existe dentro del modelo no es implementable por un operador real.
+#
+# El estado anterior fallaba ese criterio en tres de sus nueve variables:
+#   gw_storage_avg  el almacenamiento agregado de 9 acuíferos es una salida de
+#                   MODFLOW, no una medición
+#   gw_trend        derivada del anterior
+#   agr_unmet_idx   el déficit agrícola agregado no se monitorea sistemáticamente
+# y una cuarta, z_coastal, aunque medible con sondas de conductividad, varía solo
+# 0.2% sobre el frente: no aporta información para decidir.
+#
+# El estado nuevo replica lo que un operador SÍ observa: niveles en pozos de
+# monitoreo, índices de precipitación acumulada, y sus propios registros de
+# servicio (déficit y uso de camiones).
+# Red de monitoreo: cinco pozos en cinco acuíferos distintos, de cabecera a
+# costa. Se eligieron por KGE del emulador entre los que tienen métrica medida,
+# para que la señal del estado sea confiable y no ruido del surrogate.
+# Red de monitoreo: TRES pozos, uno por tramo de la cuenca. Se partió de cinco
+# y el diagnóstico del smoke test mostró que no aportaban cinco señales: los
+# pozos de Q06, Q07 y Q09 correlacionaban entre 0.86 y 0.95 entre sí, de modo
+# que tres de las entradas de la política repetían información y solo agregaban
+# dimensiones al espacio de búsqueda de NSGA-II. Se conservan los tres menos
+# redundantes (correlación cruzada 0.66-0.74), uno por zona hidrogeológica.
+POZOS_OBSERVACION = [
+    "WF_DepthToWater_m__APR_Q01_Fict_JuntaTilama__Pozo1_15m",     # Q01 cabecera, KGE 0.957
+    "WF_DepthToWater_m__APR_Q05_Fict_LosCondores__Pozo1_7m",      # Q05 medio,    KGE 0.815
+    "WF_DepthToWater_m__DemAGRO_SHAC_Q09_fict__p_68_35_id17",     # Q09 costa,    KGE 0.973
+]
+
+# Dotación de subsistencia, litros por persona y día. Referencia: Howard et al.
+# (2020), "Domestic water quantity, service level and health", 2.ª ed., OMS.
+#
+# NO se usa para acotar el déficit del estado de la política. Se intentó y la
+# premisa resultó falsa: en el modelo la población es plana a lo largo del año
+# mientras la demanda se triplica en verano, es decir, la población flotante está
+# representada como un multiplicador de demanda sobre población residente
+# constante. El consumo por habitante real se mantiene en 143 L/día, bajo este
+# umbral, de modo que el corte clasificaba como discrecional el agua de
+# subsistencia de los visitantes. Se conserva la constante porque el umbral sigue
+# siendo el criterio correcto: lo que falta es separar residentes de flotantes.
+DOTACION_SUBSISTENCIA_LPD = 200.0
+
 POLICY_STATE_FEATURES = [
-    "gw_storage_avg",        # nivel medio del acuífero, ultimas 52 semanas
-    "gw_trend",              # tendencia intra-anual
-    "ap_unmet_frac",         # J2: deficit AP / demanda AP del ultimo año
+    # Índice de nivel subterráneo estandarizado, uno por pozo de monitoreo.
+    # Adimensional y con la misma escala que el SPI, de modo que los tres
+    # pozos y los dos índices climáticos son directamente comparables entre sí.
+    "sgi_1",                 # Q01, cabecera
+    "sgi_2",                 # Q05, zona media
+    "sgi_3",                 # Q09, costa
+    "spi_12",                # precipitación acumulada 52 sem, estandarizada
+    "spi_24",                # idem 104 sem: señal climática plurianual
+    # J2: déficit de agua potable del último año, relativo a la demanda total.
+    # Ver `DOTACION_SUBSISTENCIA_LPD` sobre por qué no se acota a subsistencia.
+    "ap_unmet_frac",
     "truck_frac",            # J4: fraccion del suministro que viene en camiones
-    "agr_unmet_idx",         # J3: deficit agricola (indice normalizado)
-    "z_coastal",             # J6: cota de la interfaz salina en los pozos Q09
     "built_desalacion_costera",    # que obras YA existen (irreversibles)
     "built_desalacion_completa",
     "built_nuevo_pozo_a_5km",
 ]
 N_STATE_FEATURES = len(POLICY_STATE_FEATURES)
+
+# Estado anterior, para reproducir corridas previas con DPS_STATE=legacy.
+POLICY_STATE_FEATURES_LEGACY = [
+    "gw_storage_avg", "gw_trend", "ap_unmet_frac", "truck_frac",
+    "agr_unmet_idx", "z_coastal", "built_desalacion_costera",
+    "built_desalacion_completa", "built_nuevo_pozo_a_5km",
+]
+if os.environ.get("DPS_STATE", "").lower() == "legacy":
+    POLICY_STATE_FEATURES = POLICY_STATE_FEATURES_LEGACY
+    N_STATE_FEATURES = len(POLICY_STATE_FEATURES)
 
 # ─── Qué objetivos OPTIMIZA NSGA-II ────────────────────────────────────────
 # Orden en que compute_objectives los devuelve (ver cost_calculator).
@@ -392,7 +504,28 @@ N_OBJECTIVES = len(OBJ_OPT_IDX)
 # Las tarifas usadas son las de UNIT_COST_BY_SOURCE; si esas cambian hay que
 # recalcular (la mezcla de fuentes difiere entre observado y predicho, así que
 # las tarifas NO se cancelan en el cociente).
-J4_CAL_BY_NACTIONS = {0: 0.973, 1: 0.998, 2: 0.994, 3: 1.006}   # 3 = "3 o más"
+# ── Recalibrado para el emulador de iter02 ────────────────────────────────
+# Medido sobre los 123 runs de test de _v4_iter02, que cubren el ensamble
+# completo (14 / 56 / 25 / 28 runs por grupo):
+#
+#     grupo   n   mediana   sd
+#       0    14    1.039   0.048
+#       1    56    1.021   0.077
+#       2    25    1.032   0.083
+#      3+    28    1.032   0.133
+#
+# La tabla sigue PLANA y cerca de la unidad: los cuatro grupos difieren en menos
+# del 2% entre sí y ninguno se aparta más del 4% de 1.0, muy por debajo de su
+# propia dispersión. La calibración empírica apenas hace trabajo —el error
+# mediano de J4 pasa de 5.07% a 4.70%— y se conserva por interfaz.
+#
+# ADVERTENCIA sobre dónde se mide. Sobre las 49 corridas del FRENTE el factor da
+# 1.13, no 1.03, porque allí el emulador subestima el costo un 12%. Ese sesgo es
+# un efecto de estar FUERA DE DISTRIBUCIÓN, no una propiedad global del modelo:
+# aplicar 1.13 a toda la búsqueda sobrecorregiría el ensamble base en ~10% y
+# penalizaría artificialmente las carteras que el optimizador recorre para llegar
+# al frente. La tabla se ajusta por tanto sobre el test, no sobre el frente.
+J4_CAL_BY_NACTIONS = {0: 1.039, 1: 1.021, 2: 1.032, 3: 1.032}   # 3 = "3 o más"
 
 # Compat / override manual: si DPS_J4_CAL está seteado se usa ESE escalar para
 # todos los casos (ignora la tabla). Útil para reproducir corridas antiguas.

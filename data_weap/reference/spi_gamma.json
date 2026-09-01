@@ -1,0 +1,28 @@
+{
+  "fuente": "C:\\Users\\David\\Documents\\GitHub_DPL\\WEAP_2_ZARR\\results\\training_data\\historico_1985_2019\\weap_weekly.zarr",
+  "n_semanas": 1612,
+  "mm_anio_medio": 223.15805053710938,
+  "n_subcuencas": 6,
+  "ventanas": {
+    "spi_12": {
+      "semanas": 52,
+      "forma": 3.600821902797215,
+      "escala": 62.72843222946463,
+      "prob_cero": 0.0,
+      "n": 1561,
+      "acc_media": 225.873912699987,
+      "acc_p10": 106.51221692562103,
+      "acc_p90": 369.64827106753364
+    },
+    "spi_24": {
+      "semanas": 104,
+      "forma": 7.133692686186725,
+      "escala": 64.49742119775031,
+      "prob_cero": 0.0,
+      "n": 1509,
+      "acc_media": 460.1047818762961,
+      "acc_p10": 275.0561685129651,
+      "acc_p90": 773.0471530524519
+    }
+  }
+}

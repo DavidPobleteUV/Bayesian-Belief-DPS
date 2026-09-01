@@ -51,3 +51,13 @@ logs_smoke_*.log
 # train_subset). Son binarios y el modelo vigente ya esta ignorado mas arriba.
 data_weap/_antiguo_iter1_sincorregir/
 logs_robustez_*.log
+
+# ===== Artefactos de iteraciones alternativas del emulador =====
+# Misma razón que data_weap/: checkpoint, scalers y template son regenerables
+# desde el repo del modelo. Se apunta a ellos con DPS_DATA_DIR.
+data_weap_iter02/
+data_weap_iter*/
+
+# ===== Logs de corridas =====
+logs_*.log
+*.log

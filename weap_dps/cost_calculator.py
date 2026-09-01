@@ -49,10 +49,13 @@ M3_TO_MM3          = 1e-6       # m³ → Mm³ (millones)
 def _load_cost_lookup() -> dict:
     """
     Carga el CSV town_source_cost_mapping.csv y devuelve dos lookups:
-      - by_node:  {str(withdrawal_node): (source_type, unit_cost_clp_m3, town)}
-      - by_demagro: {DemAGRO_SHAC_QXX_fict: (source_type, unit_cost, town)}
+      - by_node:  {str(withdrawal_node): (source_type, town)}
+      - by_demagro: {DemAGRO_SHAC_QXX_fict: (source_type, town)}
 
-    El CSV vive en data_weap/reference/.
+    El CSV vive en data_weap/reference/ y solo MAPEA nodo -> tipo de fuente. No
+    trae precios: llevaba una columna `unit_cost_clp_m3` con valores obsoletos que
+    ninguna ruta usaba (el precio sale siempre de UNIT_COST_BY_SOURCE) y que
+    inducia a error a quien abriera el archivo. Se elimino.
     """
     if not TOWN_SOURCE_COST_CSV.exists():
         logger.warning("CSV de costos no encontrado: %s", TOWN_SOURCE_COST_CSV)
@@ -64,7 +67,6 @@ def _load_cost_lookup() -> dict:
         key = str(row["withdrawal_node"]).strip()
         lookup[key] = (
             str(row["source_type"]).strip(),
-            float(row["unit_cost_clp_m3"]),
             str(row["town"]).strip(),
         )
     return lookup
@@ -373,9 +375,9 @@ def j4_supply_cost(
         elif source.startswith("Withdrawal Node") or source.startswith("Withdrawal_Node"):
             node = source.replace("Withdrawal_Node", "").replace("Withdrawal Node", "").strip("_ ").strip()
             if node in lookup:
-                src_type, _csv_cost, _town = lookup[node]
+                src_type, _town = lookup[node]
                 # PRECIO desde UNIT_COST_BY_SOURCE (parámetro); el CSV solo da el tipo.
-                unit_cost = UNIT_COST_BY_SOURCE.get(src_type, _csv_cost)
+                unit_cost = UNIT_COST_BY_SOURCE[src_type]
                 yearly_vol = _weekly_to_yearly(flow_per_week, n_years)  # m³/año
                 yearly_cost = yearly_vol * unit_cost
                 if src_type in yearly_opex_by_type:
