@@ -456,6 +456,64 @@ OBJECTIVES_DIAGNOSTIC = [o for o in OBJECTIVE_NAMES if o not in OBJECTIVES_OPTIM
 OBJ_OPT_IDX = [OBJECTIVE_NAMES.index(o) for o in OBJECTIVES_OPTIMIZED]
 N_OBJECTIVES = len(OBJ_OPT_IDX)
 
+# ─── ε-dominancia (solo la usa main_eps_robust_weap.py) ────────────────────
+# Cada ε es la MENOR DIFERENCIA QUE CAMBIARÍA UNA DECISIÓN en ese objetivo.
+# Dos políticas que difieren en menos que ε caen en la misma casilla del
+# archivo y el algoritmo conserva una sola: deja de gastar población en
+# distinguir lo indistinguible.
+#
+# Por qué importa aquí y no es un parámetro cosmético: con 5 objetivos el rango
+# de Pareto pierde poder discriminante y la población entera queda no dominada
+# —medido sobre iter02: las 5 semillas devolvieron frente de 100 sobre
+# población de 100, o sea presión de selección nula—. El archivo ε restituye
+# esa presión sin tener que sacar objetivos a mano.
+#
+# Calibrados sobre el RANGO REAL de la unión de los 5 frentes de iter02, de modo
+# que cada eje quede con resolución comparable (44-71 casillas). Si un ε fuera
+# mucho más fino que los otros, ese objetivo dominaría el tamaño del archivo.
+#
+#   objetivo             rango del frente iter02      ε          casillas
+#   J2_unmet_ap          3.80e6 - 2.08e7 m3           2.5e5 m3      ~68
+#   J3_agri_value        9.83e9 CLP (~10.0 MUSD)      2.0e8 CLP     ~49
+#   J4_supply_cost       7.06e10 CLP (~72 MUSD)       1.0e9 CLP     ~71
+#   J51_mean_town_fail   64 - 506 semanas             10 semanas    ~44
+#   J52_worst_year_frac  0.116 - 0.683                0.01          ~57
+#
+# NOTA sobre J1 y J6: siguen fuera del conjunto optimizado. Con ε el argumento
+# para excluirlos es más limpio —varían 1.8% y 0.2% sobre el frente, así que
+# colapsarían a una o dos casillas y dejarían de generar no dominancia por
+# accidente dimensional— pero reincorporarlos exigiría re-derivar sus ε y
+# rehacer la comparación, así que se deja para una iteración posterior.
+EPSILONS_BY_OBJECTIVE = {
+    "J2_unmet_ap":         2.5e5,    # m3 acumulados en el horizonte
+    "J3_agri_value":       2.0e8,    # CLP de VAN
+    "J4_supply_cost":      1.0e9,    # CLP de VAN
+    "J51_mean_town_fail":  10.0,     # semanas en falla por localidad
+    "J52_worst_year_frac": 0.01,     # fracción de la demanda anual
+}
+# Escala global, para barrer la resolución sin editar el diccionario:
+#   DPS_EPS_SCALE=2 -> archivo la mitad de fino, converge antes
+EPS_SCALE = float(os.environ.get("DPS_EPS_SCALE", "1.0"))
+EPSILONS = [EPSILONS_BY_OBJECTIVE[o] * EPS_SCALE for o in OBJECTIVES_OPTIMIZED]
+
+# ─── Caja de referencia del hipervolumen ───────────────────────────────────
+# FIJA A PROPÓSITO. El hipervolumen solo es comparable entre checkpoints,
+# semillas y algoritmos si la caja de normalización no cambia; si se derivara
+# del frente de cada corrida, cada corrida se mediría contra su propia vara y
+# los números no se podrían poner en la misma figura.
+#
+# Convención de MINIMIZACIÓN (J3 ya viene negado desde simulation()).
+# HV_MINIMUM es el ideal y HV_MAXIMUM el nadir de referencia. Se fijaron ~30%
+# más allá del peor valor observado en la unión de los frentes de iter02, para
+# dejar margen a políticas peores que el algoritmo nuevo pueda encontrar.
+#
+# ADVERTENCIA: platypus DESCARTA (no recorta) las soluciones que caen fuera del
+# nadir al calcular HV. Por eso main_eps_robust_weap.py registra cuántas se
+# descartan en cada checkpoint: si ese contador deja de ser cero, la caja quedó
+# chica y los HV de esa corrida no son comparables con los demás.
+HV_MINIMUM = [3.5e6, -4.25e10, 6.7e10,  60.0, 0.10]
+HV_MAXIMUM = [2.8e7, -2.90e10, 1.65e11, 700.0, 0.90]
+
 # ─── Calibración de J4 (costo) ─────────────────────────────────────────────
 # factor = E[costo_obs] / E[costo_pred] sobre las fuentes de RESPALDO (aducción,
 # pozo costero, desal, acuerdo, camiones). Los pozos propios se excluyen: su
