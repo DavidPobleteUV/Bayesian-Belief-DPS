@@ -24,6 +24,14 @@ This repository contains the research code for the Bayesian-Belief Direct Policy
 Este repo es la **etapa de optimización** (derecha del diagrama, `weap_dps/`): consume el
 checkpoint del surrogate y produce el frente de Pareto cuyas propuestas vuelven a WEAP.
 
+## Guías
+
+- **[RUN_EPS_NSGAII.md](RUN_EPS_NSGAII.md)** — variante ε-NSGA-II del Robust DPS:
+  por qué existe, cómo lanzarla en el servidor, qué medir antes de comprometer
+  días de máquina y qué limitaciones declarar. Leer **antes** de lanzar en el
+  servidor: `data_weap_iter02/` está en `.gitignore` y el `git pull` no lo trae.
+- [ROBUST_DPS_METHODOLOGY.md](ROBUST_DPS_METHODOLOGY.md) — metodología del DPS robusto.
+
 ## Estado (agosto 2026)
 
 **Artefactos apuntando al emulador corregido.** `data_weap/` contiene el checkpoint

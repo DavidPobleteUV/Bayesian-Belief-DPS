@@ -1,0 +1,330 @@
+# Robust DPS con ε-NSGA-II — guía para correr en el servidor
+
+Este documento se lee **en el servidor**, después de clonar o actualizar el
+repo. Contiene por qué existe esta variante, cómo lanzarla, qué medir antes de
+comprometer días de máquina, y qué limitaciones hay que declarar al reportar
+los resultados.
+
+La versión NSGA-II (`weap_dps/main_robust_weap.py`, `run_robust_server.ps1`)
+**queda intacta**. Las dos conviven a propósito: la comparación entre ambas es
+el objeto del experimento.
+
+---
+
+## 1. Por qué esta variante
+
+En la corrida iter02 (5 semillas × 4.000 evaluaciones × 27 estados del mundo,
+65 h de reloj) las cinco semillas devolvieron un **frente de 100 sobre una
+población de 100**. Es decir: la población entera mutuamente no dominada.
+
+Con 5 objetivos el rango de Pareto pierde poder discriminante. Si ninguna
+solución domina a ninguna otra, todas quedan en rango 1 y **la presión de
+selección por dominancia es exactamente nula**: lo único que decide quién
+sobrevive es la distancia de apiñamiento, que es una medida de diversidad y no
+de convergencia. El algoritmo deja de empujar hacia el frente verdadero y
+empieza a repartir puntos.
+
+El archivo de **ε-dominancia** restituye esa presión. En vez de preguntar si una
+política domina a otra, declara **cuánta diferencia es significativa en cada
+objetivo** y trata como equivalentes a las que difieren por menos. Tres efectos:
+
+- acota el tamaño del archivo sin recurrir al apiñamiento;
+- mitiga directamente la degradación con muchos objetivos;
+- convierte en consecuencia del método lo que hoy es una decisión editorial:
+  J1 y J6 varían 1,8 % y 0,2 % sobre el frente, así que colapsarían a una o dos
+  casillas ε y dejarían de generar no dominancia por accidente dimensional, sin
+  que haya que excluirlos a mano.
+
+Además hay una segunda pregunta que la corrida anterior **no puede responder**:
+si 4.000 evaluaciones alcanzaron. El CV del hipervolumen entre semillas era
+1,3 %, pero eso acota la varianza entre semillas, no el sesgo común a todas —
+cinco semillas pueden converger consistentemente a la misma región subóptima.
+Lo que falta es la **trayectoria** del hipervolumen contra el número de
+evaluaciones, y por eso esta versión la registra.
+
+---
+
+## 2. Qué se agregó
+
+| archivo | qué hace |
+|---|---|
+| `weap_dps/main_eps_robust_weap.py` | ε-NSGA-II: archivo ε, reinicios adaptativos, registro de HV(nfe) |
+| `weap_dps/hv_utils.py` | hipervolumen estimado por Monte Carlo sobre caja fija |
+| `weap_dps/comparar_algoritmos.py` | NSGA-II contra ε-NSGA-II y curva de convergencia |
+| `weap_dps/benchmark_eval.py` | costo real por evaluación en la máquina donde se corra |
+| `run_eps_server.ps1` | lanzador, hermano de `run_robust_server.ps1` |
+| `weap_dps/config_weap.py` | `EPSILONS_BY_OBJECTIVE`, `HV_MINIMUM`, `HV_MAXIMUM` |
+
+`main_eps_robust_weap.py` **importa** `RobustPipeWEAP` de la versión NSGA-II en
+lugar de copiarlo. Si se copiara, cualquier divergencia futura —una
+calibración, un umbral— haría que la comparación midiera dos cosas distintas
+creyendo medir el algoritmo.
+
+### Los ε
+
+Calibrados sobre el rango real de la unión de los cinco frentes de iter02, de
+modo que cada eje quede con resolución comparable. Si un ε fuera mucho más fino
+que los otros, ese objetivo dominaría el tamaño del archivo.
+
+| objetivo | rango del frente iter02 | ε | casillas |
+|---|---|---|---|
+| J2 déficit AP | 3,80e6 – 2,08e7 m³ | 2,5e5 m³ | ~68 |
+| J3 valor agrícola | 9,83e9 CLP (~10,0 MUSD) | 2,0e8 CLP | ~49 |
+| J4 costo suministro | 7,06e10 CLP (~72 MUSD) | 1,0e9 CLP | ~71 |
+| J51 semanas en falla | 64 – 506 | 10 semanas | ~44 |
+| J52 déficit peor año | 0,116 – 0,683 | 0,01 | ~57 |
+
+Cada ε es **la menor diferencia que cambiaría una decisión** en ese objetivo.
+Es un juicio del analista, no un parámetro técnico: si alguno no te parece,
+edítalo en `config_weap.py`. Para barrer la resolución sin editar el
+diccionario está `DPS_EPS_SCALE` (`2` = archivo la mitad de fino, converge
+antes) o el parámetro `-EpsScale` del lanzador.
+
+---
+
+## 3. Referencia contra la que se compara
+
+Hipervolumen de la corrida NSGA-II de iter02, calculado con la caja fija de
+`config_weap.py`:
+
+| | |
+|---|---|
+| HV medio | **0,72720** (CV 0,7 % entre semillas) |
+| HV de la unión de las 5 semillas | **0,75637** |
+| fracción no dominada dentro de cada semilla | **1,00 en las cinco** |
+| soluciones fuera de la caja de HV | 0 |
+
+Se reproduce en cualquier máquina con:
+
+```powershell
+.\venv_DPS\Scripts\python.exe weap_dps\comparar_algoritmos.py
+```
+
+---
+
+## 4. Antes de lanzar: medir el costo real
+
+El ETA que traen los lanzadores (2,17 s por escenario, 58,5 s por evaluación de
+27 escenarios) está **medido en la PC de trabajo**: 65,0 h / 4.000 evaluaciones
+/ 27 escenarios. Extrapolarlo a otra máquina es adivinar.
+
+Lo que manda es **la velocidad de un hilo**, no el número de cores, porque cada
+semilla corre con `OMP_NUM_THREADS=1`. Un servidor con 64 cores pero hilos
+lentos puede ser *más* lento por semilla.
+
+```powershell
+.\venv_DPS\Scripts\python.exe weap_dps\benchmark_eval.py --n 3 --par 8
+```
+
+Tarda unos minutos e imprime el reloj proyectado para 4.000, 10.000 y 20.000
+evaluaciones, medido con un proceso y con ocho en paralelo. Lo segundo importa:
+si la memoria compartida es el cuello de botella, N semillas en paralelo rinden
+menos por semilla que una sola, y el ETA calculado con una sola miente.
+
+Datos de la máquina, para dimensionar cuántas semillas caben:
+
+```powershell
+$cs = Get-CimInstance Win32_ComputerSystem; $cpu = Get-CimInstance Win32_Processor; [PSCustomObject]@{ CPU=$cpu.Name; Fisicos=$cpu.NumberOfCores; Logicos=$cs.NumberOfLogicalProcessors; RAM_GB=[math]::Round($cs.TotalPhysicalMemory/1GB,1); DiscoLibre_GB=[math]::Round((Get-PSDrive C).Free/1GB,1) } | Format-List
+```
+
+### Cuánto demora, con el costo de la PC de trabajo
+
+**Las semillas son gratis y las evaluaciones no.** El reloj lo fija el
+presupuesto *por semilla*, no cuántas semillas corras: caben tantas en paralelo
+como cores haya (con 1 hilo cada una).
+
+| presupuesto por semilla | reloj |
+|---|---|
+| 4.000 evaluaciones (comparación directa con lo existente) | ~65 h ≈ 2,7 días |
+| 10.000 evaluaciones | ~163 h ≈ 6,8 días |
+
+Con 10.000 y checkpoints, el corte de 4.000 queda registrado en la curva HV(nfe)
+sin costo adicional, así que se puede abortar si ya se aplanó.
+
+---
+
+## 5. Requisito que el `git pull` NO trae
+
+**`data_weap_iter02/` está en `.gitignore`** (24 MB: checkpoint, scalers,
+template, manifiesto). Hay que copiarlos a mano al servidor:
+
+```
+data_weap_iter02\best_model.ckpt
+data_weap_iter02\X_template.npz
+data_weap_iter02\scalers_weap.npz
+data_weap_iter02\transform_params_weap.npz
+data_weap_iter02\manifest_inputs.csv
+```
+
+`run_eps_server.ps1` los verifica al arrancar y falla en el primer segundo si
+faltan. Eso es deliberado: sin la verificación, `config_weap` caería a
+`data_weap/` —el emulador de iter01— y la corrida saldría con el modelo
+equivocado **sin dar ningún error**.
+
+El lanzador fija `DPS_DATA_DIR` apuntando a `data_weap_iter02`.
+
+---
+
+## 6. Cómo lanzar
+
+```powershell
+git pull
+.\run_eps_server.ps1
+```
+
+Por defecto: 10.000 evaluaciones, 5 semillas (42, 123, 456, 789, 1010),
+población inicial 100 con tope 300, ventana de reinicio 10 generaciones, salida
+en `runs_weap\eps_iter02`.
+
+Variantes:
+
+```powershell
+.\run_eps_server.ps1 -Evaluations 4000
+```
+
+```powershell
+.\run_eps_server.ps1 -Seeds 42,123,456 -EpsProgress
+```
+
+`-EpsProgress` cambia la continuación temporal por **continuación por
+ε-progreso**: reinicia cuando el archivo deja de mejorar, que es el mecanismo
+de Borg. Está disponible pero **no es el default**, para que la comparación se
+haga contra un ε-NSGA-II estándar y no contra un híbrido.
+
+### Parámetros del lanzador
+
+| parámetro | default | qué hace |
+|---|---|---|
+| `-Evaluations` | 10000 | presupuesto por semilla |
+| `-Population` | 100 | población **inicial**; el algoritmo la reescala |
+| `-Seeds` | 42,123,456,789,1010 | semillas, en paralelo |
+| `-RestartWindow` | 10 | generaciones entre chequeos de reinicio |
+| `-MaxPopulation` | 300 | tope de población tras un reinicio |
+| `-EpsScale` | 1.0 | multiplica todos los ε |
+| `-EpsProgress` | (apagado) | continuación por ε-progreso |
+| `-OutDir` | `runs_weap\eps_iter02` | salida |
+
+Por qué `-RestartWindow 10` y no el default de Platypus: Platypus chequea cada
+**100 generaciones**. Con población 100 y 10.000 evaluaciones hay 100
+generaciones en total, así que el chequeo ocurriría una sola vez, al final: el
+mecanismo estaría nominalmente activo y en la práctica muerto.
+
+Por qué `-MaxPopulation 300`: la población se reescala a 4× el tamaño del
+archivo. Sin tope, una sola generación podría costar más que el presupuesto
+entero.
+
+### Seguimiento
+
+```powershell
+Get-Content runs_weap\eps_iter02\seed42.log -Tail 5 -Wait
+```
+
+El log trae, en cada checkpoint: evaluaciones, hipervolumen, tamaño del archivo,
+tamaño de la población y minutos transcurridos. Los reinicios aparecen como
+`EpsNSGAII restarting; adjusting population size from N to M`.
+
+### Reanudación
+
+Automática. El `.ckpt` guarda el archivo ε, la población, el caché de
+diagnóstico de J1/J6 y la historia de HV cada `--checkpoint_every` evaluaciones
+(200 por defecto). Si el proceso muere, volver a lanzar continúa desde ahí. Si
+el `.dat` final ya existe, esa semilla se salta.
+
+Al reanudar se reinyecta el **archivo**, no la población: el archivo es el
+estado valioso, y es además lo que el propio algoritmo usa al reiniciar
+(`restart()` hace `population = archive[:] + mutantes`), de modo que reanudar
+así es consistente con su semántica.
+
+La reanudación **no reproduce bit a bit** una corrida sin interrupciones: no se
+restaura el estado del generador aleatorio. Es estadísticamente equivalente,
+pero una corrida reanudada no debe compararse con otra semilla como si fueran
+réplicas exactas del mismo procedimiento.
+
+---
+
+## 7. Cómo leer los resultados
+
+```powershell
+.\venv_DPS\Scripts\python.exe weap_dps\comparar_algoritmos.py --eps "runs_weap\eps_iter02\pareto_seed*.dat"
+```
+
+Imprime tres cosas, que responden preguntas distintas y conviene no mezclar:
+
+**Tabla por semilla.** HV, tamaño del frente, horas, y **fracción no dominada
+dentro de la propia semilla**. Esa última columna es el diagnóstico de presión
+de selección: en 1,00 el rango de Pareto no discrimina nada. La referencia
+NSGA-II está en 1,00 en las cinco semillas; si ε-NSGA-II baja de ahí, el
+archivo ε está haciendo su trabajo.
+
+**Curva HV(nfe).** Si sigue subiendo al agotarse el presupuesto, el presupuesto
+fue corto. Se reporta la ganancia del último cuarto del presupuesto: si es
+despreciable, la curva se aplanó.
+
+**HV de la unión.** Mayor es mejor. Una diferencia del orden del CV entre
+semillas (0,7 %) **no es evidencia de nada**.
+
+---
+
+## 8. Limitaciones que hay que declarar
+
+**El presupuesto no es exacto.** La descendencia de un reinicio se evalúa en
+bloque —`restart()` llama a `evaluate_all(offspring)` dentro de un paso—, así
+que una corrida puede exceder lo pedido por hasta
+`(max_population − tamaño del archivo)` evaluaciones. En la prueba de humo, con
+ventana de 1 generación, 60 pedidas terminaron en 115.
+
+No se "arregla" recortando el reinicio, porque mutilarlo cambiaría el algoritmo
+que se quiere medir. Lo que se hace es registrar `nfe_real` en el `.dat` y en el
+log, y **comparar contra NSGA-II por la curva HV(nfe)** —que permite leer ambos
+al mismo número de evaluaciones— en vez de por el valor final de cada `.dat`,
+que estaría medido con presupuestos distintos.
+
+**El hipervolumen es una estimación, no el valor exacto.** El hipervolumen
+exacto de Platypus es el algoritmo recursivo en Python puro y con 5 objetivos
+escala de forma prohibitiva. Medido sobre nuestro propio frente:
+
+| soluciones | tiempo |
+|---|---|
+| 10 | 0,00 s |
+| 20 | 0,02 s |
+| 40 | 0,54 s |
+| 100 | ~40 s |
+| 500 | no terminó en 25 min |
+
+Como el archivo ε puede tener cientos de soluciones y el HV se calcula muchas
+veces durante una corrida, el método exacto haría que **medir la convergencia
+costara más que optimizar**. Se usa en cambio una estimación Monte Carlo
+(`hv_utils.py`): queda a 0,15–0,36 % del exacto donde éste sí es calculable, y
+tarda 0,6 s con 100 soluciones.
+
+Con semilla y número de muestras fijos, dos conjuntos se evalúan contra los
+mismos puntos de muestreo, así que el error queda correlacionado entre ellos y
+las **comparaciones** son más precisas que el error absoluto de cada valor por
+separado. Es exactamente el régimen que interesa. Aun así: al reportar, decir
+que es una estimación.
+
+**La caja del hipervolumen es fija y eso es deliberado.** El HV solo es
+comparable entre checkpoints, semillas y algoritmos si la caja de normalización
+no cambia; si se derivara del frente de cada corrida, cada corrida se mediría
+contra su propia vara. Las soluciones que caen más allá del nadir se **recortan**
+al nadir y se cuentan: si el contador `fuera` deja de ser cero, la caja quedó
+chica y hay que ampliar `HV_MAXIMUM` en `config_weap.py` **y recalcular todo**,
+no solo la corrida nueva.
+
+**J1 y J6 siguen fuera del conjunto optimizado.** Con ε el argumento para
+excluirlos es más limpio, pero reincorporarlos exigiría derivar sus ε y rehacer
+la comparación. Queda para una iteración posterior.
+
+---
+
+## 9. Qué no responde este experimento
+
+El optimizador **no es el eslabón débil de este trabajo**. Lo es la brecha entre
+el desempeño del emulador dentro y fuera de distribución: el ajuste en el
+reparto del suministro entre fuentes cae de 0,679 sobre el ensamble base a
+0,439 sobre las corridas del frente. Esa diferencia es de un orden de magnitud
+mayor que cualquier diferencia esperable entre MOEAs.
+
+Este experimento sirve para poder declarar, con evidencia y no por omisión, que
+la elección del algoritmo y el tamaño del presupuesto fueron examinados. No
+sustituye a la verificación del emulador contra WMS2Ma.
