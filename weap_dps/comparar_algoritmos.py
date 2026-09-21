@@ -14,6 +14,9 @@ Responde dos preguntas distintas que conviene no mezclar:
      si vale 1.0, el rango de Pareto no esta discriminando nada y lo unico que
      empuja es la distancia de apinamiento.
 
+Acepta .dat finales y .ckpt de corridas en curso, de modo que se puede mirar
+el avance sin detener nada y abortar cuando la curva HV se aplane.
+
 NO carga el emulador ni necesita platypus: lee los .dat y opera sobre los
 objetivos guardados. Se puede correr en cualquier maquina con numpy.
 
@@ -69,11 +72,26 @@ def frac_no_dominada(A: np.ndarray) -> float:
 
 
 def cargar(patron: str) -> list[dict]:
+    """Lee .dat finales y tambien .ckpt de corridas en curso o abortadas.
+
+    Poder leer el checkpoint importa por una razon practica: con el HV
+    registrado se puede abortar una corrida cuando la curva se aplana, y sin
+    esto ese aborto no dejaria nada utilizable, porque el .dat solo se escribe
+    al terminar. El .ckpt guarda el archivo eps y la historia de HV, que es
+    todo lo que necesita esta comparacion.
+    """
     out = []
     for f in sorted(glob.glob(patron)):
         with open(f, "rb") as fh:
             d = pickle.load(fh)
-        A = np.array([o for _, o in d["result"]], float)
+        if "result" in d:                       # .dat final
+            A = np.array([o for _, o in d["result"]], float)
+        elif "archive" in d:                    # .ckpt de una corrida en curso
+            A = np.array([o for _, o in d["archive"]], float)
+            d = dict(d, nfe_real=d.get("nfe"), elapsed=float("nan"))
+        else:
+            print(f"  (se omite {Path(f).name}: no trae frente ni archivo)")
+            continue
         out.append({"archivo": Path(f).name, "obj": A, "dat": d})
     return out
 
