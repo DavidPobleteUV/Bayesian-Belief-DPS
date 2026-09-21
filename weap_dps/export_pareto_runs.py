@@ -232,6 +232,28 @@ def main() -> int:
             print(f"  {k+1}/{len(sel)} políticas")
 
     df = pd.DataFrame(master)
+    # ── Columnas de acciones VACÍAS, obligatorias para el pipeline de WEAP ────
+    # weap_runner.py decide entre el modo VALOR —leer el cronograma de
+    # `policy_file`— y el flujo antiguo de banderas con:
+    #
+    #     is_value_mode = policy_file is not None and "on_desalacion_costera" in row.index
+    #
+    # Es una prueba de PRESENCIA DE COLUMNA, no de valor. Sin estas columnas el
+    # pipeline ignora `policy_file` en silencio, trata el run como factorial y
+    # corre el BASELINE: cero acciones activas. No falla, no avisa, y produce 75
+    # corridas de 70 min que no sirven para comparar contra el frente.
+    #
+    # En `RunIDs_Q_full.csv` —el maestro con el que se corrió iter01— estas 12
+    # columnas existen y están TODAS en NaN. Por eso iter01 funcionó: sus runs se
+    # fusionaron en ese maestro. El camino del maestro independiente, con
+    # --runids_file, no las heredaba.
+    #
+    # Se emiten vacías a propósito: el cronograma real vive en el archivo de
+    # política y estas columnas solo actúan como interruptor de modo.
+    for _acc in ("desalacion_costera", "desalacion_completa", "nuevo_pozo_a_5km",
+                 "acuerdo"):
+        for _pre in ("act_", "on_", "off_"):
+            df[f"{_pre}{_acc}"] = pd.NA
     csv = out / f"RunIDs_Q_pareto_iter{args.iteration:02d}.csv"
     df.to_csv(csv, index=False, encoding="utf-8-sig")
     (out / "seleccion.json").write_text(json.dumps(
