@@ -459,14 +459,16 @@ N_OBJECTIVES = len(OBJ_OPT_IDX)
 # ─── ε-dominancia (solo la usa main_eps_robust_weap.py) ────────────────────
 # Cada ε es la MENOR DIFERENCIA QUE CAMBIARÍA UNA DECISIÓN en ese objetivo.
 # Dos políticas que difieren en menos que ε caen en la misma casilla del
-# archivo y el algoritmo conserva una sola: deja de gastar población en
+# archivo y el archivo conserva una sola: el frente reportado deja de
 # distinguir lo indistinguible.
 #
 # Por qué importa aquí y no es un parámetro cosmético: con 5 objetivos el rango
 # de Pareto pierde poder discriminante y la población entera queda no dominada
 # —medido sobre iter02: las 5 semillas devolvieron frente de 100 sobre
-# población de 100, o sea presión de selección nula—. El archivo ε restituye
-# esa presión sin tener que sacar objetivos a mano.
+# población de 100, o sea presión de selección nula—. El archivo ε NO restituye
+# esa presión directamente: en platypus la selección sale de la población y el
+# archivo solo recibe soluciones. Actúa sobre la búsqueda a través de los
+# reinicios, y sobre el resultado dando un frente con resolución declarada.
 #
 # Calibrados sobre el RANGO REAL de la unión de los 5 frentes de iter02, de modo
 # que cada eje quede con resolución comparable (44-71 casillas). Si un ε fuera

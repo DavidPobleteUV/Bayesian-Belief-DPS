@@ -13,8 +13,16 @@ Qué cambia respecto de la versión NSGA-II, y por qué:
 1. ARCHIVO DE ε-DOMINANCIA. Con 5 objetivos el rango de Pareto deja de
    discriminar: en iter02 las 5 semillas devolvieron un frente de 100 sobre una
    población de 100, es decir la población entera mutuamente no dominada y
-   presión de selección nula. El archivo ε restituye esa presión declarando
-   cuánta diferencia es significativa en cada objetivo (config.EPSILONS).
+   presión de selección nula al final de la corrida.
+
+   El archivo NO actúa sobre esa presión directamente. En platypus los padres
+   salen de la población y la truncación sigue las reglas de NSGA-II; el
+   archivo solo recibe soluciones (archive.extend). Influye en la búsqueda por
+   una única vía, los reinicios (punto 2), que reconstruyen la población desde
+   él. Lo que aporta por sí mismo es un frente con resolución declarada
+   —config.EPSILONS: cuánta diferencia es significativa en cada objetivo— y de
+   tamaño acotado. Si además mejora la presión en la población es una pregunta
+   empírica, que responde comparar_algoritmos.py a igual número de evaluaciones.
 
 2. REINICIOS ADAPTATIVOS. ε-NSGA-II reescala la población al tamaño del archivo
    y reinyecta diversidad cuando detecta estancamiento. Los valores por defecto
@@ -295,6 +303,11 @@ def main():
                      "nfe_pedidas": args.evaluations,
                      "hv_box": {"minimum": list(HV_MINIMUM), "maximum": list(HV_MAXIMUM)},
                      "hv_history": hv_hist,
+                     # La POBLACIÓN final, para el diagnóstico de presión de
+                     # selección. El frente ("result") es el archivo eps, cuya
+                     # fracción no dominada vale 1.0 por construcción.
+                     "population": [(list(s.variables), list(s.objectives))
+                                    for s in algo.population],
                      "scenarios": labels, "lam": args.lam,
                      "config": vars(args), "elapsed": el}, f)
     logger.info("Guardado: %s  (HV final %.5f)", args.output, hv)

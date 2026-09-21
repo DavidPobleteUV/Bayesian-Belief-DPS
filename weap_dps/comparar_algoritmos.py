@@ -9,10 +9,19 @@ Responde dos preguntas distintas que conviene no mezclar:
      coincidencia del HV entre semillas NO responde esto: acota la varianza
      entre semillas, no el sesgo comun a todas.
 
-  2. ALGORITMO. HV final, tamano del frente y fraccion no dominada dentro de
-     cada semilla. Esa ultima cifra es el diagnostico de presion de seleccion:
-     si vale 1.0, el rango de Pareto no esta discriminando nada y lo unico que
-     empuja es la distancia de apinamiento.
+  2. ALGORITMO. HV final, tamano del frente y fraccion no dominada de la
+     POBLACION de cada semilla. Esa ultima cifra es el diagnostico de presion
+     de seleccion: si vale 1.0, el rango de Pareto no esta discriminando nada
+     y lo unico que empuja es la distancia de apinamiento.
+
+     Se calcula sobre la poblacion y NO sobre el frente. El archivo eps
+     contiene solo soluciones mutuamente no dominadas por construccion, asi que
+     su fraccion no dominada vale siempre 1.0 y no diagnostica nada. En NSGA-II
+     el frente reportado ES la poblacion final, de modo que ahi coinciden.
+
+     Solo es comparable a IGUAL numero de evaluaciones: al comienzo de
+     cualquier algoritmo genetico la poblacion tiene mas soluciones dominadas y
+     la cifra sube a medida que converge.
 
 Acepta .dat finales y .ckpt de corridas en curso, de modo que se puede mirar
 el avance sin detener nada y abortar cuando la curva HV se aplane.
@@ -56,8 +65,11 @@ def hv(objetivos: np.ndarray) -> tuple[float, int]:
 def frac_no_dominada(A: np.ndarray) -> float:
     """Fraccion del conjunto que es no dominada DENTRO de si mismo.
 
-    En 1.0 la presion de seleccion por rango de Pareto es exactamente nula: no
-    hay ningun par comparable y solo la diversidad decide quien sobrevive.
+    Aplicada a una POBLACION: en 1.0 la presion de seleccion por rango de
+    Pareto es exactamente nula, no hay ningun par comparable y solo la
+    diversidad decide quien sobrevive.
+
+    Aplicada a un archivo eps da siempre 1.0 por construccion: no usarla ahi.
     """
     n = len(A)
     if n == 0:
@@ -84,15 +96,25 @@ def cargar(patron: str) -> list[dict]:
     for f in sorted(glob.glob(patron)):
         with open(f, "rb") as fh:
             d = pickle.load(fh)
+        # `obj` es el FRENTE (para el HV); `pop` es la POBLACION (para la
+        # fraccion no dominada). En NSGA-II coinciden; en eps-NSGA-II no.
         if "result" in d:                       # .dat final
             A = np.array([o for _, o in d["result"]], float)
+            if d.get("algorithm") == "EpsNSGAII":
+                # El .dat de eps guarda la poblacion desde que se agrego; las
+                # corridas lanzadas antes no la traen y la columna queda vacia.
+                pp = d.get("population")
+                P = np.array([o for _, o in pp], float) if pp else None
+            else:
+                P = A                           # NSGA-II: frente = poblacion
         elif "archive" in d:                    # .ckpt de una corrida en curso
             A = np.array([o for _, o in d["archive"]], float)
+            P = np.array([o for _, o in d["population"]], float)
             d = dict(d, nfe_real=d.get("nfe"), elapsed=float("nan"))
         else:
             print(f"  (se omite {Path(f).name}: no trae frente ni archivo)")
             continue
-        out.append({"archivo": Path(f).name, "obj": A, "dat": d})
+        out.append({"archivo": Path(f).name, "obj": A, "pop": P, "dat": d})
     return out
 
 
@@ -102,7 +124,7 @@ def resumen(nombre: str, corridas: list[dict]) -> dict | None:
         return None
     print(f"\n{'='*78}\n{nombre}  ({len(corridas)} semillas)\n{'='*78}")
     print(f"{'archivo':<34}{'nfe':>7}{'frente':>8}{'HV':>10}"
-          f"{'no dom.':>10}{'horas':>8}{'fuera':>7}")
+          f"{'nd pobl.':>10}{'horas':>8}{'fuera':>7}")
     hvs, fuera_total = [], 0
     for c in corridas:
         h, fu = hv(c["obj"])
@@ -114,15 +136,17 @@ def resumen(nombre: str, corridas: list[dict]) -> dict | None:
         # final sin mirar esta columna seria comparar presupuestos distintos.
         cfg = c["dat"].get("config", {})
         nfe = c["dat"].get("nfe_real", cfg.get("evaluations", float("nan")))
+        ndp = (f"{frac_no_dominada(c['pop']):>10.2f}" if c["pop"] is not None
+               else f"{'-':>10}")
         print(f"{c['archivo']:<34}{nfe:>7.0f}{len(c['obj']):>8}{h:>10.5f}"
-              f"{frac_no_dominada(c['obj']):>10.2f}{horas:>8.1f}{fu:>7d}")
+              f"{ndp}{horas:>8.1f}{fu:>7d}")
     union = np.vstack([c["obj"] for c in corridas])
     h_union, fu_union = hv(union)
     hvs = np.array(hvs)
     cv = 100 * hvs.std() / hvs.mean() if hvs.mean() else float("nan")
     print(f"\n  HV medio        {hvs.mean():.5f}   CV entre semillas {cv:.1f} %")
     print(f"  HV de la union  {h_union:.5f}   ({len(union)} soluciones, "
-          f"{frac_no_dominada(union):.2f} no dominadas)")
+          f"{frac_no_dominada(union):.2f} no dominadas entre semillas)")
     if fuera_total:
         print(f"  AVISO: {fuera_total} soluciones fuera de la caja de HV. Se "
               f"recortan al nadir, asi que el HV de esa corrida queda sesgado "

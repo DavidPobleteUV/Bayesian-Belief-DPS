@@ -24,16 +24,31 @@ sobrevive es la distancia de apiñamiento, que es una medida de diversidad y no
 de convergencia. El algoritmo deja de empujar hacia el frente verdadero y
 empieza a repartir puntos.
 
-El archivo de **ε-dominancia** restituye esa presión. En vez de preguntar si una
-política domina a otra, declara **cuánta diferencia es significativa en cada
-objetivo** y trata como equivalentes a las que difieren por menos. Tres efectos:
+El archivo de **ε-dominancia** **no actúa sobre esa presión directamente**, y
+conviene decirlo con precisión porque una versión anterior de esta guía afirmaba
+lo contrario. En la implementación de Platypus, la selección de padres y la
+truncación de la población siguen exactamente las reglas de NSGA-II: los padres
+salen de la población, y el archivo solo **recibe** soluciones —nunca las entrega
+a la selección—. Influye en la búsqueda por una única vía, **los reinicios**:
+cuando se disparan, la población se reconstruye a partir del archivo más
+mutantes y se redimensiona a unas cuatro veces su tamaño.
 
-- acota el tamaño del archivo sin recurrir al apiñamiento;
-- mitiga directamente la degradación con muchos objetivos;
-- convierte en consecuencia del método lo que hoy es una decisión editorial:
-  J1 y J6 varían 1,8 % y 0,2 % sobre el frente, así que colapsarían a una o dos
-  casillas ε y dejarían de generar no dominancia por accidente dimensional, sin
-  que haya que excluirlos a mano.
+Lo que el archivo sí aporta, y es por lo que vale la pena:
+
+- **un frente con resolución declarada.** Cada ε dice cuánta diferencia es
+  significativa en cada objetivo, y dos políticas que difieren en menos quedan
+  en la misma casilla. El frente deja de ser «las 100 que sobrevivieron» para
+  ser «lo mejor encontrado, a la resolución que importa para decidir»;
+- **un tamaño acotado** sin recurrir al apiñamiento;
+- **memoria de lo mejor encontrado**, que los reinicios usan para reinyectar
+  diversidad cuando la búsqueda se estanca;
+- si J1 y J6 se reincorporaran como objetivos, su variación de 1,8 % y 0,2 %
+  colapsaría a una o dos casillas del archivo, sin inflarlo por accidente
+  dimensional. Hoy siguen fuera del conjunto optimizado (§8).
+
+**Si ε-NSGA-II mejora o no la presión de selección en la población es una
+pregunta empírica**, y se responde midiendo la fracción no dominada de la
+población a igual número de evaluaciones (§7), no por construcción.
 
 Además hay una segunda pregunta que la corrida anterior **no puede responder**:
 si 4.000 evaluaciones alcanzaron. El CV del hipervolumen entre semillas era
@@ -91,7 +106,7 @@ Hipervolumen de la corrida NSGA-II de iter02, calculado con la caja fija de
 |---|---|
 | HV medio | **0,72720** (CV 0,7 % entre semillas) |
 | HV de la unión de las 5 semillas | **0,75637** |
-| fracción no dominada dentro de cada semilla | **1,00 en las cinco** |
+| fracción no dominada de la población, a 4.000 evaluaciones | **1,00 en las cinco** (en NSGA-II el frente reportado es la población final) |
 | soluciones fuera de la caja de HV | 0 |
 
 Se reproduce en cualquier máquina con:
@@ -333,11 +348,45 @@ réplicas exactas del mismo procedimiento.
 
 Imprime tres cosas, que responden preguntas distintas y conviene no mezclar:
 
-**Tabla por semilla.** HV, tamaño del frente, horas, y **fracción no dominada
-dentro de la propia semilla**. Esa última columna es el diagnóstico de presión
-de selección: en 1,00 el rango de Pareto no discrimina nada. La referencia
-NSGA-II está en 1,00 en las cinco semillas; si ε-NSGA-II baja de ahí, el
-archivo ε está haciendo su trabajo.
+**Tabla por semilla.** HV, evaluaciones, tamaño del frente, horas, y
+**fracción no dominada de la población** (columna `nd pobl.`). Es el
+diagnóstico de presión de selección: en 1,00 el rango de Pareto no discrimina
+nada dentro de la población, y lo único que decide quién sobrevive es el
+apiñamiento.
+
+Se calcula sobre la **población** y no sobre el frente, por una razón que una
+versión anterior de esta guía pasaba por alto: el archivo ε contiene solo
+soluciones mutuamente no dominadas **por construcción**, así que su fracción no
+dominada vale siempre 1,00 y no diagnostica nada. En NSGA-II el frente reportado
+es la población final, de modo que para NSGA-II las dos cosas coinciden.
+
+**Solo es comparable a igual número de evaluaciones.** Al comienzo de cualquier
+algoritmo genético la población tiene más soluciones dominadas, así que la cifra
+parte baja y sube a medida que la búsqueda converge. La referencia de NSGA-II
+—1,00 en las cinco semillas— está medida a las 4.000; la de ε-NSGA-II hay que
+leerla también a las 4.000. A las 800 evaluaciones daba entre 0,74 y 0,97, un
+valor que todavía no dice nada comparado con NSGA-II.
+
+> **Hay que guardar una copia de los checkpoints a las 4.000.** El `.ckpt` se
+> sobrescribe cada 200 evaluaciones y se borra al terminar, y el `.dat` final de
+> la corrida lanzada el 20-09-2026 no trae la población —se agregó después de
+> lanzarla—. Tanto la fracción no dominada de la población como el HV de la
+> unión a las 4.000 existen solo en ese `.ckpt`, durante unas 3 horas. Cuando el
+> log marque entre 4.000 y 4.200 evaluaciones (hacia el martes 23 entre las
+> 15:30 y las 18:30):
+>
+> ```powershell
+> New-Item -ItemType Directory -Force runs_weap\eps_iter02\snap_4000 | Out-Null; Copy-Item runs_weap\eps_iter02\*.ckpt runs_weap\eps_iter02\snap_4000\
+> ```
+>
+> y la comparación a presupuesto igual se hace sobre esa copia:
+>
+> ```powershell
+> python weap_dps\comparar_algoritmos.py --eps "runs_weap\eps_iter02\snap_4000\*.ckpt"
+> ```
+>
+> El HV por semilla a las 4.000 también queda en `hv_history` y se recupera
+> después, pero el HV de la **unión** y la población no.
 
 **Curva HV(nfe).** Si sigue subiendo al agotarse el presupuesto, el presupuesto
 fue corto. Se reporta la ganancia del último cuarto del presupuesto: si es
