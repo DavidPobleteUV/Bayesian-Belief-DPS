@@ -34,7 +34,7 @@ import torch
 torch.set_num_threads(int(_TH))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from platypus import NSGAII
+from platypus import NSGAII, InjectedPopulation, Solution
 from weap_dps.config_weap import (
     OPTIMIZER_CONFIG, RESULTS_DIR, ZARR_TEMPLATE_PATH,
     SPIN_UP_YEARS, DECISION_YEARS, WARMUP_WEEKS, WEEKS_PER_YEAR, j4_calibration_factor,
@@ -119,6 +119,10 @@ def main():
     p.add_argument("--n_climate", type=int, default=5)
     p.add_argument("--lam", type=float, default=1.0, help="aversión al riesgo (mean + λ·std)")
     p.add_argument("--output", type=Path, default=RESULTS_DIR / f"robust_{int(time.time())}.dat")
+    p.add_argument("--checkpoint_every", type=int, default=200,
+                   help="evaluaciones entre checkpoints; 0 los desactiva")
+    p.add_argument("--no_resume", action="store_true",
+                   help="ignora el checkpoint existente y arranca de cero")
     args = p.parse_args()
 
     np.random.seed(args.seed)
@@ -133,13 +137,84 @@ def main():
         logger.info("   - %s", lb)
 
     problem = PipeProblemWEAP(pipe)
-    algo = NSGAII(problem, population_size=args.population)
-    t0 = time.time(); algo.run(args.evaluations); el = time.time() - t0
+
+    # ── Reanudación ──────────────────────────────────────────────────────────
+    # NSGA-II no guarda estado y el .dat se escribe solo al terminar, de modo que
+    # un corte a mitad de camino perdia la corrida entera: 71 h por semilla en la
+    # configuracion vigente. Se guarda la poblacion cada `checkpoint_every`
+    # evaluaciones, junto con el cache de diagnostico de J1/J6, y al reiniciar se
+    # inyecta como poblacion inicial.
+    #
+    # La reanudacion NO reproduce bit a bit una corrida sin interrupciones: no se
+    # restaura el estado del generador aleatorio. Es estadisticamente equivalente
+    # —misma poblacion, mismo problema— pero la trayectoria diverge, asi que una
+    # corrida reanudada no debe compararse con otra semilla como si fueran
+    # replicas exactas del mismo procedimiento.
+    ck = args.output.with_suffix(".ckpt")
+    hecho = 0
+    if ck.exists() and not args.no_resume:
+        with open(ck, "rb") as f:
+            est = pickle.load(f)
+        sols = []
+        for v, o in est["population"]:
+            sol = Solution(problem)
+            sol.variables[:] = list(v)
+            sol.objectives[:] = list(o)
+            sol.evaluated = True
+            sols.append(sol)
+        pipe._diag.update({tuple(k): np.asarray(val) for k, val in est["diag"]})
+        hecho = int(est["nfe"])
+        algo = NSGAII(problem, population_size=args.population,
+                      generator=InjectedPopulation(sols))
+        logger.info("REANUDANDO desde %s: %d evaluaciones hechas, %d en el cache "
+                    "de diagnostico", ck.name, hecho, len(pipe._diag))
+    else:
+        algo = NSGAII(problem, population_size=args.population)
+
+    def guardar_ck(nfe):
+        tmp = ck.with_suffix(".ckpt.tmp")
+        with open(tmp, "wb") as f:
+            pickle.dump({"nfe": nfe,
+                         "population": [(list(x.variables), list(x.objectives))
+                                        for x in algo.population],
+                         "diag": [(list(k), v.tolist()) for k, v in pipe._diag.items()],
+                         "seed": args.seed}, f)
+        tmp.replace(ck)          # atomico: un corte durante el volcado no corrompe
+
+    t0 = time.time()
+    paso = args.checkpoint_every if args.checkpoint_every > 0 else args.evaluations
+    # Contabilidad de evaluaciones tras una reanudacion. Dos hechos de platypus
+    # que hay que combinar y que por separado dan resultados equivocados:
+    #
+    #   1. `algo.nfe` cuenta desde cero en CADA instancia. Tomarlo como el total
+    #      dejaba `hecho` clavado en el valor restaurado y el bucle no terminaba.
+    #   2. Inicializar con InjectedPopulation consume `population_size` nfe SIN
+    #      evaluar nada, porque las soluciones vienen marcadas como evaluadas.
+    #      Sumarlo al total daba la corrida por completa sin hacer trabajo: en la
+    #      prueba, una reanudacion a mitad de camino "termino" en 0.0 min y dejo
+    #      un .dat que parecia valido.
+    #
+    # El objetivo de esta instancia es por tanto (lo que falta) + (el offset que
+    # la inyeccion consume en falso).
+    base = hecho
+    offset = args.population if base > 0 else 0
+    objetivo = (args.evaluations - base) + offset
+    while algo.nfe < objetivo:
+        algo.run(min(paso, objetivo - algo.nfe))
+        hecho = base + algo.nfe - offset
+        if args.checkpoint_every > 0:
+            guardar_ck(hecho)
+            logger.info("checkpoint: %d/%d evaluaciones (%.1f min)",
+                        hecho, args.evaluations, (time.time() - t0) / 60)
+    el = time.time() - t0
     logger.info("Listo en %.1f min  | frente=%d", el / 60, len(algo.result))
 
     n_hit = sum(pipe.all_objectives_for(s.variables) is not None for s in algo.result)
     logger.info("Diagnostico (J1, J6) recuperado para %d/%d politicas del frente",
                 n_hit, len(algo.result))
+
+    if ck.exists():
+        ck.unlink()          # el .dat final reemplaza al checkpoint
 
     with open(args.output, "wb") as f:
         pickle.dump({"result": [(list(s.variables), list(s.objectives)) for s in algo.result],

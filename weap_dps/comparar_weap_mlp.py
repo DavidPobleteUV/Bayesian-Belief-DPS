@@ -51,6 +51,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from weap_dps import balance_correction as bc
 from weap_dps.config_weap import (TOWN_SOURCE_COST_CSV, WARMUP_WEEKS,
+                                  DECISION_YEARS, WEEKS_PER_YEAR,
                                   j4_calibration_factor)
 from weap_dps.cost_calculator import compute_objectives
 
@@ -116,8 +117,28 @@ def evaluar_run(pipe, Z, run: int, verbose: bool = True) -> dict:
     sf_w = np.stack([Y_raw[:, ti[n]] for n in surr.target_names_surf], axis=1)
 
     # Demanda AP cruda, para la corrección de balance y para J51/J52
+    # Dos arreglos de demanda, y NO son intercambiables.
+    #
+    #   dem_all    todas las localidades con serie de demanda. Es lo que necesita
+    #              la correccion de balance, que impone S + U = k*D sobre el
+    #              sistema completo.
+    #   dem_towns  solo las localidades de ap_town_order y EN ESE ORDEN. Es lo que
+    #              necesitan J51 y J52, que dividen el deficit de cada pueblo por
+    #              su propia demanda.
+    #
+    # Pasar dem_all a J51 rompia por broadcasting cuando los conteos diferian
+    # (4 pueblos contra 8 columnas) y, peor, cuando coincidian en numero pero no
+    # en orden habria emparejado cada deficit con la demanda de otro pueblo sin
+    # error visible.
     dcols = [i for i, n in enumerate(fn_raw) if n.startswith("AP_WaterDemand__")]
-    dem = X_raw[:, dcols]
+    dem_all = X_raw[:, dcols]
+    idx_dem = {n[len("AP_WaterDemand__"):]: i for i, n in enumerate(fn_raw)
+               if n.startswith("AP_WaterDemand__")}
+    faltan = [t for t in pipe.ap_town_order if t not in idx_dem]
+    if faltan:
+        raise RuntimeError(f"Sin columna de demanda en el zarr para {faltan}: "
+                           f"J51 y J52 no se pueden calcular.")
+    dem_towns = X_raw[:, [idx_dem[t] for t in pipe.ap_town_order]]
 
     # Historial de acciones desde el propio X: ambos lados reciben el MISMO, de
     # modo que el CAPEX es identico y se cancela en la comparacion. Lo que se
@@ -139,7 +160,13 @@ def evaluar_run(pipe, Z, run: int, verbose: bool = True) -> dict:
             target_names_gw=surr.target_names_gw,
             target_names_surf=surr.target_names_surf,
             actions_history=hist, action_names_order=orden,
-            decision_start_week=W0, ap_demand_m3s=dem)
+            decision_start_week=W0, ap_demand_m3s=dem_towns,
+            # Sin ap_town_order, J51 y J52 salen NaN sin avisar: compute_objectives
+            # los necesita para emparejar cada columna de deficit con su demanda.
+            # El criterio 1 los descartaba en silencio por no ser finitos, de modo
+            # que dos de los siete objetivos quedaban sin verificar contra el
+            # modelo de referencia — justamente los dos por localidad.
+            ap_town_order=list(pipe.ap_town_order))
         if n_acc is not None:
             o["J4_supply_cost"] *= j4_calibration_factor(n_acc)
         return o
@@ -154,11 +181,13 @@ def evaluar_run(pipe, Z, run: int, verbose: bool = True) -> dict:
           if n.startswith("AP_TransmissionLinks__")]
     iU = [i for i, n in enumerate(surr.target_names_surf)
           if n.startswith("AP_UnmetDemand__")]
-    surf_c = bc.apply_balance_correction(surf, iL, iU, dem, W0)
+    surf_c = bc.apply_balance_correction(surf, iL, iU, dem_all, W0)
     o_corr = objetivos(gw, surf_c, "MLP corregido", n_acc=n_acc)
 
     # Demanda total del horizonte, denominador de la metrica de J2.
-    dem_total = float(np.maximum(dem[W0:], 0).sum() * 604800.0)
+    # Denominador de la metrica de J2: demanda del SISTEMA, no solo la de
+    # los pueblos emparejados.
+    dem_total = float(np.maximum(dem_all[W0:], 0).sum() * 604800.0)
 
     fams = {}
     for nom, arr_p, arr_w in (("GW", gw, gw_w), ("SUP", surf_c, sf_w)):
@@ -190,19 +219,29 @@ def evaluar_run(pipe, Z, run: int, verbose: bool = True) -> dict:
 
 
 def error_objetivo(nombre: str, w: float, m: float, dem_total: float):
-    """(error, es_relativo).
+    """(error, etiqueta de la metrica).
 
-    J2 se mide en puntos porcentuales de la demanda y no en relativo: su valor
-    de referencia puede ser exactamente cero —hay politicas del frente que en
-    WMMaS2 no dejan ningun deficit— y contra ese cero cualquier prediccion
-    positiva da un error relativo arbitrariamente grande aunque el error
-    absoluto sea despreciable.
+    Tres objetivos NO admiten error relativo porque su valor de referencia puede
+    ser exactamente cero — y lo es justamente en las politicas buenas, que son las
+    que interesan. Contra ese cero cualquier prediccion positiva da un error
+    arbitrariamente grande aunque el error absoluto sea despreciable:
+
+      J2   deficit de agua potable  -> puntos porcentuales de la DEMANDA total
+      J51  semanas en falla         -> puntos porcentuales del HORIZONTE (1716 sem)
+      J52  deficit del peor anio    -> puntos porcentuales, ya es una fraccion
+
+    Las tres quedan en la misma unidad —puntos porcentuales— de modo que la
+    tolerancia del 5 % se lee igual para todas. El resto va en relativo.
     """
     if nombre.startswith("J2") and dem_total > 0:
-        return abs(m - w) / dem_total, False
+        return abs(m - w) / dem_total, "p.p. dem"
+    if nombre.startswith("J51"):
+        return abs(m - w) / (DECISION_YEARS * WEEKS_PER_YEAR), "p.p. horiz"
+    if nombre.startswith("J52"):
+        return abs(m - w), "p.p."
     if not np.isfinite(w) or abs(w) < 1e-9:
-        return np.nan, True
-    return abs(m - w) / abs(w), True
+        return np.nan, "relativo"
+    return abs(m - w) / abs(w), "relativo"
 
 
 def main() -> int:
@@ -235,12 +274,12 @@ def main() -> int:
 
     sep = "=" * 78
     print(f"\n{sep}\nCRITERIO 1 - error por objetivo (tolerancia {TOL:.0%})\n{sep}")
-    print("J2 en puntos porcentuales de la demanda; el resto en error relativo.\n")
+    print("J2, J51 y J52 en puntos porcentuales (ver error_objetivo); el resto en relativo.\n")
     print(f"{'objetivo':22s} {'metrica':>10} {'mediana':>9} {'p90':>9} "
           f"{'max':>9} {'dentro tol.':>13}")
     filas = []
     for kk in list(res[0]["weap"]):
-        e, rel = [], True
+        e, rel = [], "relativo"
         for R in res:
             v, rel = error_objetivo(kk, R["weap"][kk], R["corr"][kk], R["dem_total"])
             if np.isfinite(v):
@@ -249,11 +288,10 @@ def main() -> int:
             continue
         e = np.array(e)
         dentro = 100.0 * (e <= TOL).mean()
-        print(f"{kk:22s} {('relativo' if rel else 'p.p. dem'):>10} "
+        print(f"{kk:22s} {rel:>10} "
               f"{100*np.median(e):8.2f}% {100*np.percentile(e, 90):8.2f}% "
               f"{100*e.max():8.2f}% {dentro:11.0f} %")
-        filas.append({"objetivo": kk,
-                      "metrica": "relativo" if rel else "pp_demanda",
+        filas.append({"objetivo": kk, "metrica": rel,
                       "n_runs": len(e), "mediana": np.median(e),
                       "p90": np.percentile(e, 90), "max": e.max(),
                       "pct_dentro_tol": dentro})

@@ -79,7 +79,22 @@ from weap_dps.scenario_builder import (PP_ACUM_SOURCE, PP_ACUM_WINDOWS,
 # ampliamente las condiciones GCM (8 series, 82 a 128 runs cada una) y es la
 # región donde el emulador mejor reproduce la respuesta climática (r = 0.990).
 # La escasez está en la verificación bajo estrés hídrico sostenido.
-CONTEXTOS = [(882, "megasequia"), (693, "sequia_extrema")]
+# Contextos de sequia impuesta sobre los que se re-simula cada politica. Los tres
+# quedaron FUERA de la optimizacion (§4.3): el frente se obtiene sobre GCM
+# plausibles y las sequias severas se reservan para verificacion.
+#
+# El tercero no se eligio por severidad sino por ANO DE INICIO. Los dos primeros
+# empiezan en 2035 y 2040, es decir, con margen para construir; el 526 empieza en
+# 2025, antes del primer ano de decision (2027), de modo que somete a la politica
+# a una sequia que ya esta instalada cuando toma su primera decision. Es la
+# dimension que los otros dos no cubren, y la que mas exige a una regla de lazo
+# cerrado. Un cuarto candidato, el run 779, se descarto por ser casi identico al
+# 693 en severidad y ano de inicio.
+CONTEXTOS = [
+    (882, "megasequia"),        # sev 0.701 desde 2035, AWI-CM-1-1-MR / ssp585
+    (693, "sequia_extrema"),    # sev 0.855 desde 2040, AWI-CM-1-1-MR / ssp585
+    (526, "sequia_temprana"),   # sev 0.723 desde 2025, ACCESS-CM2 / ssp245
+]
 
 
 def _no_dominadas(F: np.ndarray) -> np.ndarray:
