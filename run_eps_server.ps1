@@ -89,15 +89,26 @@ if ($LASTEXITCODE -ne 0 -or -not $nScen) { $nScen = $NClimate * 3 }
 $nScen = [int]$nScen
 
 # 2.17 s por rollout de escenario, MEDIDO en la corrida iter02 (65.0 h / 4000
-# evaluaciones / 27 escenarios), con 1 hilo de torch y 5 semillas en paralelo.
+# evaluaciones / 27 escenarios), con 1 hilo de torch y 5 semillas EN PARALELO.
+#
+# La competencia entre semillas no es despreciable y el ETA debe incluirla: el
+# mismo emulador en la misma maquina da 1.55 s/escenario con UN SOLO proceso
+# (41.9 s/evaluacion) y 2.17 con cinco (58.5 s/evaluacion), o sea +40% por
+# semilla. Un ETA medido con un proceso solo subestimaria el reloj en ese 40%.
+# En otra maquina hay que re-medirlo con weap_dps/benchmark_eval.py --par N
 $eta = [math]::Round($Evaluations * 2.17 * $nScen / 3600, 1)
 $seedList = $Seeds -join ", "
 
 # --- Aviso de RAM ---
 $ramGB   = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB
 $cores   = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
-$perProc = 0.9 + 0.005 * $nScen
-$maxSeeds = [math]::Max(1, [math]::Floor(($ramGB - 2.0) / $perProc))
+# 0.55 GB por proceso MEDIDO (working set en regimen, 27 escenarios, modelo
+# iter02 cargado). El 0.9 + 0.005*nScen que usaba run_robust_server.ps1 era una
+# estimacion declarada como no medida y sobrestimaba ~2x, de modo que en una
+# maquina chica desaconsejaba semillas que si caben.
+# Se reserva 2.5 GB para el SO y se deja 20% de margen sobre lo medido.
+$perProc  = 0.66
+$maxSeeds = [math]::Max(1, [math]::Floor(($ramGB - 2.5) / $perProc))
 if ($Seeds.Count -gt $maxSeeds) {
     Write-Warning ("RAM insuficiente: {0} semillas x ~{1} GB, y el equipo tiene {2:N1} GB." -f `
                    $Seeds.Count, [math]::Round($perProc, 2), $ramGB)
@@ -105,9 +116,12 @@ if ($Seeds.Count -gt $maxSeeds) {
     $r = Read-Host "Continuar igual? (s/N)"
     if ($r -notmatch '^[sSyY]') { Write-Host "Cancelado."; return }
 }
-if ($Seeds.Count -gt $cores) {
-    Write-Warning ("{0} semillas sobre {1} cores logicos: se pelearan por CPU y el ETA se alarga." -f `
+# En esta carga el cuello de botella es CPU, no RAM: cada semilla ocupa un core
+# entero (OMP=1) y solo 0.66 GB. Conviene dejar al menos un core al SO.
+if ($Seeds.Count -gt ($cores - 1)) {
+    Write-Warning ("{0} semillas sobre {1} cores logicos: se pelearan por CPU y el ETA se alarga " -f `
                    $Seeds.Count, $cores)
+    Write-Warning ("mas alla del +40% ya incluido. Con esta maquina conviene no pasar de {0}." -f ($cores - 1))
 }
 
 $cont = if ($EpsProgress) { "eps-progreso (estilo Borg)" } else { "temporal adaptativa" }

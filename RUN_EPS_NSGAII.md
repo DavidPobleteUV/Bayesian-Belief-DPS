@@ -113,13 +113,15 @@ semilla corre con `OMP_NUM_THREADS=1`. Un servidor con 64 cores pero hilos
 lentos puede ser *más* lento por semilla.
 
 ```powershell
-.\venv_DPS\Scripts\python.exe weap_dps\benchmark_eval.py --n 3 --par 8
+.\venv_DPS\Scripts\python.exe weap_dps\benchmark_eval.py --n 3 --par 5
 ```
 
 Tarda unos minutos e imprime el reloj proyectado para 4.000, 10.000 y 20.000
-evaluaciones, medido con un proceso y con ocho en paralelo. Lo segundo importa:
-si la memoria compartida es el cuello de botella, N semillas en paralelo rinden
-menos por semilla que una sola, y el ETA calculado con una sola miente.
+evaluaciones, medido con un proceso y con N en paralelo. Lo segundo importa y no
+es un detalle: en la PC de trabajo, una semilla sola cuesta 41,9 s por
+evaluación y cinco en paralelo cuestan 58,5 s cada una — **+40 %**. Un ETA
+medido con un solo proceso subestima el reloj en esa proporción. Usa como `--par`
+el número de semillas que piensas lanzar.
 
 Datos de la máquina, para dimensionar cuántas semillas caben:
 
@@ -127,19 +129,78 @@ Datos de la máquina, para dimensionar cuántas semillas caben:
 $cs = Get-CimInstance Win32_ComputerSystem; $cpu = Get-CimInstance Win32_Processor; [PSCustomObject]@{ CPU=$cpu.Name; Fisicos=$cpu.NumberOfCores; Logicos=$cs.NumberOfLogicalProcessors; RAM_GB=[math]::Round($cs.TotalPhysicalMemory/1GB,1); DiscoLibre_GB=[math]::Round((Get-PSDrive C).Free/1GB,1) } | Format-List
 ```
 
-### Cuánto demora, con el costo de la PC de trabajo
+### Costo medido en la PC de trabajo (12 cores lógicos)
+
+| condición | s/escenario | s/evaluación (27 esc.) |
+|---|---|---|
+| **1 proceso solo** | 1,55 | **41,9** |
+| **5 semillas en paralelo** | 2,17 | **58,5** |
+
+La competencia entre semillas cuesta **+40 % por semilla**, y no es despreciable:
+un ETA medido con un solo proceso subestima el reloj en ese 40 %. Por eso el
+benchmark se corre con `--par N`, no solo.
+
+**RAM medida: 0,55 GB por proceso** (working set en régimen, 27 escenarios,
+modelo iter02 cargado). El `0,9 + 0,005 × n_escenarios` que usaba
+`run_robust_server.ps1` era una estimación declarada como no medida y
+sobrestimaba ~2×, de modo que en una máquina chica desaconsejaba semillas que sí
+caben. `run_eps_server.ps1` usa 0,66 GB (lo medido más 20 % de margen) y reserva
+2,5 GB para el sistema operativo.
+
+**Conclusión de dimensionamiento: el cuello de botella es CPU, no RAM.** Cada
+semilla ocupa un core entero (`OMP_NUM_THREADS=1`) y medio giga.
+
+### Cuánto demora
 
 **Las semillas son gratis y las evaluaciones no.** El reloj lo fija el
-presupuesto *por semilla*, no cuántas semillas corras: caben tantas en paralelo
-como cores haya (con 1 hilo cada una).
+presupuesto *por semilla*, no cuántas semillas corras — mientras quepan en los
+cores disponibles.
 
-| presupuesto por semilla | reloj |
+| presupuesto por semilla | reloj en la PC de trabajo |
 |---|---|
 | 4.000 evaluaciones (comparación directa con lo existente) | ~65 h ≈ 2,7 días |
 | 10.000 evaluaciones | ~163 h ≈ 6,8 días |
 
 Con 10.000 y checkpoints, el corte de 4.000 queda registrado en la curva HV(nfe)
 sin costo adicional, así que se puede abortar si ya se aplanó.
+
+### El servidor es más chico que la PC de trabajo
+
+Medido el 20-09-2026:
+
+| | PC de trabajo | servidor |
+|---|---|---|
+| cores lógicos | 12 | **8** |
+| RAM | — | **7,9 GB** |
+| CPU | — | `Common KVM processor` (virtualizado, modelo enmascarado) |
+| disco libre | — | 298 GB |
+
+Consecuencias, y conviene tenerlas claras antes de comprometer la máquina:
+
+1. **Caben hasta 7 semillas** (8 cores menos uno para el sistema). La RAM
+   alcanza para ~8, así que no es ella la que limita.
+2. **No se pueden correr los dos experimentos a la vez.** Con 12 cores la idea
+   era lanzar ε-NSGA-II y NSGA-II con presupuesto extendido en paralelo, para
+   separar el efecto del algoritmo del de gastar más evaluaciones. Con 8 cores
+   hay que elegir, o correrlos en serie.
+3. **No entrenar `iter02_base` ni `iter02_wide` en la misma ventana.** El
+   entrenamiento del MLP usa varios hilos y le quitaría cores a las semillas,
+   alargando el reloj de ambas cosas.
+4. **`Common KVM processor` significa que la velocidad de un hilo es
+   desconocida**, y es justamente lo que fija el reloj. Puede ser más lento que
+   la PC de trabajo, en cuyo caso 10.000 evaluaciones pasan de 6,8 días a algo
+   bastante peor. **Correr el benchmark antes de decidir el presupuesto no es
+   opcional en esta máquina.**
+
+En el servidor, el benchmark con el número de semillas que se piensa lanzar:
+
+```powershell
+.\venv_DPS\Scripts\python.exe weap_dps\benchmark_eval.py --n 3 --par 5
+```
+
+Si el resultado da más de ~60 s/evaluación, conviene reconsiderar: con 4.000
+evaluaciones ya serían 2,8 días y con 10.000 casi 7, y puede salir más a cuenta
+correrlo en la PC de trabajo, que tiene 12 cores y velocidad de hilo conocida.
 
 ---
 
