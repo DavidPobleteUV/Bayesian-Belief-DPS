@@ -192,15 +192,37 @@ Consecuencias, y conviene tenerlas claras antes de comprometer la máquina:
    bastante peor. **Correr el benchmark antes de decidir el presupuesto no es
    opcional en esta máquina.**
 
-En el servidor, el benchmark con el número de semillas que se piensa lanzar:
+### Resultado del benchmark en el servidor: descartado para esta corrida
+
+Medido el 20-09-2026 con `benchmark_eval.py --n 3 --par 5`:
+
+| | PC de trabajo | servidor | relación |
+|---|---|---|---|
+| s/evaluación, 1 proceso | 41,9 | **73,0** | 1,74× más lento |
+| s/evaluación, 5 en paralelo | 58,5 | **182,5** | **3,12× más lento** |
+| penalización por competencia | +40 % | **+150 %** | — |
+
+| presupuesto | reloj en el servidor |
+|---|---|
+| 4.000 evaluaciones | **8,4 días** |
+| 10.000 evaluaciones | **21,1 días** |
+
+La penalización de +150 % es el dato revelador: cinco procesos de **un solo
+hilo** sobre 8 cores lógicos no deberían competir así. Indica que los vCPU del
+KVM están **sobresuscritos a nivel del hipervisor** — la máquina comparte CPU
+física con otros huéspedes, de modo que los "8 cores" no son 8 cores
+dedicados. Ningún ajuste del lado del DPS corrige eso.
+
+**Conclusión: el Robust DPS se corre en la PC de trabajo.** El servidor queda
+para el entrenamiento del MLP (`iter02_base`, `iter02_wide`), que es carga de
+otro tipo y donde perder tiempo de reloj cuesta menos.
+
+Antes de comprometer el servidor a entrenar, conviene verificar si tiene GPU:
+la misma sobresuscripción de vCPU afectaría a un entrenamiento por CPU.
 
 ```powershell
-.\venv_DPS\Scripts\python.exe weap_dps\benchmark_eval.py --n 3 --par 5
+python -c "import torch; print('CUDA:', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')"
 ```
-
-Si el resultado da más de ~60 s/evaluación, conviene reconsiderar: con 4.000
-evaluaciones ya serían 2,8 días y con 10.000 casi 7, y puede salir más a cuenta
-correrlo en la PC de trabajo, que tiene 12 cores y velocidad de hilo conocida.
 
 ---
 
