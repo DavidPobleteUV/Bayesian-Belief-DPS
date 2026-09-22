@@ -101,7 +101,15 @@ $seedList = $Seeds -join ", "
 
 # --- Aviso de RAM ---
 $ramGB   = (Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB
-$cores   = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+# Nucleos FISICOS, no logicos. El hyperthreading no agrega capacidad para esta
+# carga: dos hilos del mismo nucleo compiten por las mismas unidades de calculo.
+# Medido el 22-09-2026 en el i7-8700 (6 fisicos / 12 logicos): con 5 semillas del
+# DPS mas 5 procesos de otro trabajo -10 procesos sobre 6 nucleos- el segundo
+# trabajo paso de 101 a 348 s por unidad, 3.4x mas lento. Contando logicos, el
+# aviso de abajo no se habria disparado.
+# NumberOfCores viene por procesador fisico: se suman por si hay mas de uno.
+$cores   = (Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum
+$logicos = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
 # 0.55 GB por proceso MEDIDO (working set en regimen, 27 escenarios, modelo
 # iter02 cargado). El 0.9 + 0.005*nScen que usaba run_robust_server.ps1 era una
 # estimacion declarada como no medida y sobrestimaba ~2x, de modo que en una
@@ -116,12 +124,13 @@ if ($Seeds.Count -gt $maxSeeds) {
     $r = Read-Host "Continuar igual? (s/N)"
     if ($r -notmatch '^[sSyY]') { Write-Host "Cancelado."; return }
 }
-# En esta carga el cuello de botella es CPU, no RAM: cada semilla ocupa un core
-# entero (OMP=1) y solo 0.66 GB. Conviene dejar al menos un core al SO.
+# En esta carga el cuello de botella es CPU, no RAM: cada semilla ocupa un nucleo
+# entero (OMP=1) y solo 0.66 GB. Conviene dejar al menos uno al SO y a cualquier
+# otro trabajo que corra en paralelo.
 if ($Seeds.Count -gt ($cores - 1)) {
-    Write-Warning ("{0} semillas sobre {1} cores logicos: se pelearan por CPU y el ETA se alarga " -f `
-                   $Seeds.Count, $cores)
-    Write-Warning ("mas alla del +40% ya incluido. Con esta maquina conviene no pasar de {0}." -f ($cores - 1))
+    Write-Warning ("{0} semillas sobre {1} nucleos FISICOS ({2} logicos): se pelearan por CPU " -f `
+                   $Seeds.Count, $cores, $logicos)
+    Write-Warning ("y el ETA se alarga mas alla del +40% ya incluido. Conviene no pasar de {0}." -f ($cores - 1))
 }
 
 $cont = if ($EpsProgress) { "eps-progreso (estilo Borg)" } else { "temporal adaptativa" }
@@ -131,7 +140,7 @@ Write-Host ("  semillas      : {0}   (en paralelo)" -f $seedList)
 Write-Host ("  evaluaciones  : {0}  | poblacion inicial: {1}  | tope: {2}" -f $Evaluations, $Population, $MaxPopulation)
 Write-Host ("  escenarios    : {0}  | lambda={1}  | escala de eps={2}" -f $nScen, $Lambda, $EpsScale)
 Write-Host ("  continuacion  : {0}, ventana {1} generaciones" -f $cont, $RestartWindow)
-Write-Host ("  equipo        : {0} cores logicos, {1:N1} GB" -f $cores, $ramGB)
+Write-Host ("  equipo        : {0} nucleos fisicos ({1} logicos), {2:N1} GB" -f $cores, $logicos, $ramGB)
 Write-Host ("  ETA           : ~{0} h de reloj" -f $eta)
 Write-Host ""
 

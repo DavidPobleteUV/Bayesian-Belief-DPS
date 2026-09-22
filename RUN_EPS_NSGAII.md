@@ -144,7 +144,7 @@ Datos de la máquina, para dimensionar cuántas semillas caben:
 $cs = Get-CimInstance Win32_ComputerSystem; $cpu = Get-CimInstance Win32_Processor; [PSCustomObject]@{ CPU=$cpu.Name; Fisicos=$cpu.NumberOfCores; Logicos=$cs.NumberOfLogicalProcessors; RAM_GB=[math]::Round($cs.TotalPhysicalMemory/1GB,1); DiscoLibre_GB=[math]::Round((Get-PSDrive C).Free/1GB,1) } | Format-List
 ```
 
-### Costo medido en la PC de trabajo (12 cores lógicos)
+### Costo medido en la PC de trabajo (i7-8700: 6 núcleos físicos, 12 lógicos)
 
 | condición | s/escenario | s/evaluación (27 esc.) |
 |---|---|---|
@@ -163,7 +163,19 @@ caben. `run_eps_server.ps1` usa 0,66 GB (lo medido más 20 % de margen) y reserv
 2,5 GB para el sistema operativo.
 
 **Conclusión de dimensionamiento: el cuello de botella es CPU, no RAM.** Cada
-semilla ocupa un core entero (`OMP_NUM_THREADS=1`) y medio giga.
+semilla ocupa un núcleo entero (`OMP_NUM_THREADS=1`) y medio giga.
+
+> **Cuentan los núcleos FÍSICOS, no los lógicos.** El hyperthreading duplica la
+> cuenta que reporta Windows pero no la capacidad: dos hilos del mismo núcleo
+> compiten por las mismas unidades de cálculo. Medido el 22-09-2026 en esta
+> máquina: con las 5 semillas del DPS corriendo, agregar 5 procesos de otro
+> trabajo —10 procesos sobre 6 núcleos físicos— hizo que ese segundo trabajo
+> pasara de 101 a **348 s por unidad**, 3,4 veces más lento, y frenó también al
+> DPS. Con 2 procesos adicionales, 7 sobre 6 núcleos, el costo es marginal.
+>
+> La regla práctica: **procesos pesados simultáneos ≤ núcleos físicos**, dejando
+> uno para el sistema. Versiones anteriores de esta guía y del lanzador contaban
+> los lógicos y por eso no advertían nada.
 
 ### Cuánto demora
 
@@ -185,7 +197,8 @@ Medido el 20-09-2026:
 
 | | PC de trabajo | servidor |
 |---|---|---|
-| cores lógicos | 12 | **8** |
+| núcleos físicos | 6 | **8** |
+| núcleos lógicos | 12 | 8 |
 | RAM | — | **7,9 GB** |
 | CPU | — | `Common KVM processor` (virtualizado, modelo enmascarado) |
 | disco libre | — | 298 GB |
@@ -194,7 +207,7 @@ Consecuencias, y conviene tenerlas claras antes de comprometer la máquina:
 
 1. **Caben hasta 7 semillas** (8 cores menos uno para el sistema). La RAM
    alcanza para ~8, así que no es ella la que limita.
-2. **No se pueden correr los dos experimentos a la vez.** Con 12 cores la idea
+2. **No se pueden correr los dos experimentos a la vez.** Con más núcleos la idea
    era lanzar ε-NSGA-II y NSGA-II con presupuesto extendido en paralelo, para
    separar el efecto del algoritmo del de gastar más evaluaciones. Con 8 cores
    hay que elegir, o correrlos en serie.
@@ -223,7 +236,7 @@ Medido el 20-09-2026 con `benchmark_eval.py --n 3 --par 5`:
 | 10.000 evaluaciones | **21,1 días** |
 
 La penalización de +150 % es el dato revelador: cinco procesos de **un solo
-hilo** sobre 8 cores lógicos no deberían competir así. Indica que los vCPU del
+hilo** sobre 8 núcleos físicos no deberían competir así. Indica que los vCPU del
 KVM están **sobresuscritos a nivel del hipervisor** — la máquina comparte CPU
 física con otros huéspedes, de modo que los "8 cores" no son 8 cores
 dedicados. Ningún ajuste del lado del DPS corrige eso.
